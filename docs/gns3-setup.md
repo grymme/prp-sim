@@ -17,7 +17,7 @@ The `.gns3a` appliance file automates the entire setup.
 Clone the repository or download the appliance file:
 
 ```bash
-git clone https://github.com/westermo/prp-gns3.git
+git clone https://github.com/grymme/prp-sim.git
 ```
 
 The appliance file is at: `gns3/westermo-prp.gns3a`

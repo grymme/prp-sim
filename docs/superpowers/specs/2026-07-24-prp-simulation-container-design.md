@@ -129,7 +129,7 @@ Stale nodes removed after `node_forget_time` (64s).
 ## 5. GNS3 Integration & Distribution
 
 ### 5.1 Docker Appliance
-Public GitHub repo `westermo/prp-gns3`. Distribution via:
+Public GitHub repo `grymme/prp-sim`. Distribution via:
 - Docker image: `ghcr.io/<org>/prp-gns3:latest`
 - `.gns3a` appliance file included in repo; importable via GNS3 File → Import appliance.
 

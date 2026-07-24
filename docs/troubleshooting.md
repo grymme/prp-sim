@@ -471,7 +471,7 @@ docker logs -f <container-id>
 
 ### Community Resources
 
-- [GitHub Issues](https://github.com/westermo/prp-gns3/issues)
+- [GitHub Issues](https://github.com/grymme/prp-sim/issues)
 - [GNS3 Community](https://community.gns3.com)
 - [IEC 62439-3 Standard](https://webstore.iec.ch/en/publication/24566)
 
