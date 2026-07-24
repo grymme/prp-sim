@@ -1,0 +1,19 @@
+name: Build and Publish
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: go mod download && go test ./...
+      - run: docker build -t ghcr.io/westermo/prp-gns3:latest .
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker tag ghcr.io/westermo/prp-gns3:latest ghcr.io/westermo/prp-gns3:${{ github.ref_name }}
+          docker push ghcr.io/westermo/prp-gns3:latest
+          docker push ghcr.io/westermo/prp-gns3:${{ github.ref_name }}

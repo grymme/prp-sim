@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  redbox-a:
+    image: ghcr.io/westermo/prp-gns3:latest
+    privileged: true
+    networks:
+      - lan-a
+      - lan-b
+  redbox-b:
+    image: ghcr.io/westermo/prp-gns3:latest
+    privileged: true
+    networks:
+      - lan-a
+      - lan-b
+  san:
+    image: alpine
+    command: ["sh", "-c", "echo SAN; sleep 3600"]
+    networks:
+      - lan-a
+networks:
+  lan-a:
+  lan-b:

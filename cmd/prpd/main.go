@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"prp-gns3/internal/config"
+	"prp-gns3/internal/supervision"
+	"prp-gns3/internal/tap"
 )
 
 func main() {
@@ -19,13 +21,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("prpd: role=%s name=%s\n", cfg.Node.Role, cfg.Node.Name)
-}
-func bindRaw(iface string) {
-	fmt.Printf("raw: bound %s\n", iface)
+	fmt.Printf("prpd: role=%s name=%s prp_id=%d\n", cfg.Node.Role, cfg.Node.Name, cfg.PRP.PRPID)
+
+	tap.Create(cfg.VirtualIface.Name)
+	bindRaw(cfg.Interfaces.LanA)
+	bindRaw(cfg.Interfaces.LanB)
+	supervision.SendInterval(cfg.Interfaces.LanA, 2)
+
+	fmt.Println("loop: active")
 }
 
-func init() {
-	bindRaw("eth0")
-	bindRaw("eth1")
+func bindRaw(iface string) {
+	fmt.Printf("raw: bound %s\n", iface)
 }
