@@ -1,13 +1,13 @@
 version: '3.8'
 services:
   redbox-a:
-    image: ghcr.io/westermo/prp-gns3:latest
+    image: ghcr.io/grymme/prp-sim:latest
     privileged: true
     networks:
       - lan-a
       - lan-b
   redbox-b:
-    image: ghcr.io/westermo/prp-gns3:latest
+    image: ghcr.io/grymme/prp-sim:latest
     privileged: true
     networks:
       - lan-a

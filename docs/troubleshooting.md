@@ -19,7 +19,7 @@ PRP requires raw socket access. The container must run with `--privileged`.
 # Test manually with privileged mode
 docker run --rm --privileged --network=host \
   -v $(pwd)/config.yaml:/etc/prp/config.yaml \
-  ghcr.io/westermo/prp-gns3:latest
+  ghcr.io/grymme/prp-sim:latest
 ```
 
 #### Interface Doesn't Exist
@@ -41,7 +41,7 @@ Invalid YAML syntax or missing required fields.
 ```bash
 # Test config loading
 docker run --rm -v $(pwd)/config.yaml:/etc/prp/config.yaml \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   prpd --config=/etc/prp/config.yaml 2>&1
 
 # Check for YAML errors
@@ -257,7 +257,7 @@ sudo usermod -aG docker $USER
 docker run --rm --privileged --network=host \
   -e DEBUG_FRAMES=1 \
   -e LOG_FORMAT=json \
-  ghcr.io/westermo/prp-gns3:latest
+  ghcr.io/grymme/prp-sim:latest
 ```
 
 **Output**:
@@ -278,7 +278,7 @@ mkdir -p /tmp/prp
 # Run with pcap enabled
 docker run --rm --privileged --network=host \
   -v /tmp/prp:/var/log/prp \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   prpd --pcap=/var/log/prp/capture.pcap
 
 # Analyze in Wireshark
@@ -329,17 +329,17 @@ Test individual components:
 ```bash
 # Test config loading
 docker run --rm -v $(pwd)/config.yaml:/etc/prp/config.yaml \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   prpd --config=/etc/prp/config.yaml 2>&1 | head -20
 
 # Test raw socket binding
 docker run --rm --privileged --network=host \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   ip link show
 
 # Test TAP interface
 docker run --rm --privileged --network=host \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   ip tuntap add dev prp0 mode tap && ip link show prp0
 ```
 

@@ -12,7 +12,7 @@
   "maintainer_email": "prp@westermo.sim",
   "docker": {
     "adapters": 3,
-    "image": "ghcr.io/westermo/prp-gns3:latest",
+    "image": "ghcr.io/grymme/prp-sim:latest",
     "console_type": "telnet"
   }
 }

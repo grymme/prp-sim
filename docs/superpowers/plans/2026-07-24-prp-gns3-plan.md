@@ -70,10 +70,10 @@ ENTRYPOINT ["prpd"]
 ```makefile
 # Makefile
 build:
-	docker build -t ghcr.io/westermo/prp-gns3:latest .
+	docker build -t ghcr.io/grymme/prp-sim:latest .
 
 run:
-	docker run --rm --privileged --network=host -v $(PWD)/tests/config.yaml:/etc/prp/config.yaml ghcr.io/westermo/prp-gns3:latest
+	docker run --rm --privileged --network=host -v $(PWD)/tests/config.yaml:/etc/prp/config.yaml ghcr.io/grymme/prp-sim:latest
 ```
 
 - [ ] **Step 4: Commit**
@@ -404,8 +404,8 @@ In `Dockerfile`: add `ENV LOG_FORMAT=text`.
 - [ ] **Step 3: Run full container**
 
 ```bash
-docker build -t ghcr.io/westermo/prp-gns3:latest .
-docker run --rm --privileged --network=host ghcr.io/westermo/prp-gns3:latest
+docker build -t ghcr.io/grymme/prp-sim:latest .
+docker run --rm --privileged --network=host ghcr.io/grymme/prp-sim:latest
 ```
 Expected output:
 ```
@@ -447,7 +447,7 @@ git commit -m "feat: full daemon integration"
   "maintainer_email": "prp@westermo.sim",
   "docker": {
     "adapters": 3,
-    "image": "ghcr.io/westermo/prp-gns3:latest",
+    "image": "ghcr.io/grymme/prp-sim:latest",
     "console_type": "telnet"
   }
 }
@@ -476,7 +476,7 @@ prp:
 # PRP GNS3 Simulation
 
 Quick start:
-1. `docker pull ghcr.io/westermo/prp-gns3:latest`
+1. `docker pull ghcr.io/grymme/prp-sim:latest`
 2. GNS3 → File → Import appliance → select `gns3/westermo-prp.gns3a`
 3. Drag node into topology; connect Port A (eth0) to LAN A, Port B (eth1) to LAN B, Interlink (eth2) to SAN.
 ```
@@ -508,7 +508,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - run: docker build -t ghcr.io/westermo/prp-gns3:latest .
+    - run: docker build -t ghcr.io/grymme/prp-sim:latest .
     - run: go test ./...
     - name: Publish
       if: startsWith(github.ref, 'refs/tags/')
@@ -523,7 +523,7 @@ jobs:
 version: '3.8'
 services:
   redbox:
-    image: ghcr.io/westermo/prp-gns3:latest
+    image: ghcr.io/grymme/prp-sim:latest
     privileged: true
     networks:
       - lan-a

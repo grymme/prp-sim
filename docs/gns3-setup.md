@@ -48,7 +48,7 @@ If the appliance import fails, manually configure the Docker container.
 #### Step 1: Pull the Docker Image
 
 ```bash
-docker pull ghcr.io/westermo/prp-gns3:latest
+docker pull ghcr.io/grymme/prp-sim:latest
 ```
 
 #### Step 2: Create Docker Template
@@ -57,7 +57,7 @@ docker pull ghcr.io/westermo/prp-gns3:latest
 2. Click **New**
 3. Fill in:
    - **Name**: `Westermo PRP Node`
-   - **Image**: `ghcr.io/westermo/prp-gns3:latest`
+   - **Image**: `ghcr.io/grymme/prp-sim:latest`
    - **Adapters**: `3`
    - **Console type**: `telnet`
    - **Extra hosts**: (leave empty)
@@ -222,10 +222,10 @@ In GNS3, right-click the node → **Configure**:
 docker ps
 
 # Pull manually
-docker pull ghcr.io/westermo/prp-gns3:latest
+docker pull ghcr.io/grymme/prp-sim:latest
 
 # Check image exists
-docker images ghcr.io/westermo/prp-gns3
+docker images ghcr.io/grymme/prp-sim
 ```
 
 ### Node Won't Start

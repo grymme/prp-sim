@@ -16,7 +16,7 @@ A userspace implementation of the **Parallel Redundancy Protocol (PRP, IEC 62439
 ### 1. Pull the Docker image
 
 ```bash
-docker pull ghcr.io/westermo/prp-gns3:latest
+docker pull ghcr.io/grymme/prp-sim:latest
 ```
 
 ### 2. Import into GNS3
@@ -131,7 +131,7 @@ make build
 ```bash
 docker run --rm --privileged --network=host \
   -v $(pwd)/config.yaml:/etc/prp/config.yaml \
-  ghcr.io/westermo/prp-gns3:latest
+  ghcr.io/grymme/prp-sim:latest
 ```
 
 ### Run with custom role
@@ -140,7 +140,7 @@ docker run --rm --privileged --network=host \
 docker run --rm --privileged --network=host \
   -e PRP_ROLE=dan \
   -e PRP_PRP_ID=2 \
-  ghcr.io/westermo/prp-gns3:latest
+  ghcr.io/grymme/prp-sim:latest
 ```
 
 ## GNS3 Integration
@@ -151,7 +151,7 @@ The `.gns3a` file (`gns3/westermo-prp.gns3a`) defines the GNS3 template:
 
 - **3 adapters**: eth0 (LAN A), eth1 (LAN B), eth2 (Interlink)
 - **Console**: Telnet (access via GNS3 console or `docker exec`)
-- **Image**: Auto-pulled from `ghcr.io/westermo/prp-gns3:latest`
+- **Image**: Auto-pulled from `ghcr.io/grymme/prp-sim:latest`
 
 ### Example Topology
 
@@ -221,7 +221,7 @@ go test ./...
 ### Build Docker Image
 
 ```bash
-docker build -t ghcr.io/westermo/prp-gns3:latest .
+docker build -t ghcr.io/grymme/prp-sim:latest .
 ```
 
 ### Integration Test
@@ -250,7 +250,7 @@ Enable pcap output for Wireshark analysis:
 ```bash
 docker run --privileged --network=host \
   -v /tmp/prp.pcap:/var/log/prp/capture.pcap \
-  ghcr.io/westermo/prp-gns3:latest \
+  ghcr.io/grymme/prp-sim:latest \
   prpd --pcap=/var/log/prp/capture.pcap
 ```
 
