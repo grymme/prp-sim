@@ -172,17 +172,16 @@ A typical PRP deployment uses a RedBox on each side to bridge two SANs across tw
     |    1    |                             |    2    |
     |         |                             |         |
     +----+----+                             +----+----+
-         |                                      |
+         |    |                                 |     |
     A-port (eth0)                          A-port (eth0)
     B-port (eth1)                          B-port (eth1)
-         |                                      |
-         |                                      |
-    +----+--------------------------------------+
-    |                                          |
-  ===========                             ===========
-    LAN A                                    LAN B
-  (Switch A)                             (Switch B)
-    ===========                             ===========
+         |    |                                 |     | 
+         |    |                                 |     | 
+         +-----------LAN A----------------------+     | 
+              |                                       | 
+              +-----------LAN B-----------------------+
+
+
 
   RedBox 1 sends a copy of SAN 1's frame to both LAN A and LAN B.
   RedBox 2 receives both copies and forwards only one to SAN 2.
