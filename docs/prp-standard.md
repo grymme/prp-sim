@@ -245,14 +245,14 @@ PRP uses two completely independent LANs (A and B). There is no ring between the
            |                                           |
     +------+------+    +----------+    +---------+     +------+------+
     |    DAN 1    |    |  DAN 2   |    | RedBox  |     |  RedBox 2   |
-    |  A  +  B    |    | A  +  B  |    | A + B   |     |  A  +  B   |
-    |    ports    |    |  ports   |    | + SAN   |     |   ports    |
+    |  A  +  B    |    | A  +  B  |    | A + B   |     |  A  +  B    |
+    |    ports    |    |  ports   |    | + SAN   |     |   ports     |
     +------+------+    +----+-----+    +----+----+     +-----+-------+
            |                |               |                |
            |                |               +-SAN            |
            |                |               (interlink)      |
-           |                |                |                |
-           +----------------+----------------+----------------+
+           |                |                |               |
+           +----------------+----------------+---------------+
                           (no cross-link between LANs)
 ```
 

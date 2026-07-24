@@ -58,10 +58,10 @@ Loads and validates YAML configuration:
 ```
 ┌──────────┐     ┌─────────────────────────────────────┐     ┌──────────┐
 │  eth2    │────▶│  1. Read raw Ethernet frame         │────▶│  eth0    │
-│(Interlink)    │  2. Insert VLAN tag if present       │     │ (LAN A)  │
+│(Interlink)     │  2. Insert VLAN tag if present      │     │ (LAN A)  │
 └──────────┘     │  3. Assign sequence number          │     └──────────┘
                  │  4. Encode RCT trailer              │
-                 │  5. Send to both eth0 and eth1       │     ┌──────────┐
+                 │  5. Send to both eth0 and eth1      │     ┌──────────┐
                  └─────────────────────────────────────┘────▶│  eth1    │
                                                              │ (LAN B)  │
                                                              └──────────┘
@@ -71,14 +71,14 @@ Loads and validates YAML configuration:
 
 ```
 ┌──────────┐
-│  eth0    │──┐     ┌─────────────────────────────────────┐     ┌──────────┐
-│ (LAN A)  │  │     │  1. Read frame from either port     │────▶│  eth2    │
-└──────────┘  ├────▶│  2. Detect RCT trailer             │     │(Interlink)│
+│  eth0    │──┐     ┌────────────────────────────────────┐     ┌──────────┐
+│ (LAN A)  │  │     │  1. Read frame from either port    │────▶│  eth2    │
+└──────────┘  ├────▶│  2. Detect RCT trailer             │     │(Interlink)
 ┌──────────┐  │     │  3. Extract (src MAC, seq no)      │     └──────────┘
 │  eth1    │──┘     │  4. Check node table (dup detect)  │
-│ (LAN B)  │       │  5. Strip RCT trailer              │
-└──────────┘       │  6. Forward original frame to eth2  │
-                   └─────────────────────────────────────┘
+│ (LAN B)  │        │  5. Strip RCT trailer              │
+└──────────┘        │  6. Forward original frame to eth2 │
+                    └────────────────────────────────────┘
 ```
 
 ### DAN Mode
@@ -93,7 +93,7 @@ Loads and validates YAML configuration:
 ┌──────────┐     ┌─────────────────────────────────────┐     │ (LAN B)  │
 │  prp0    │◀────│  Read from eth0/eth1                │◀────└──────────┘
 │  (TAP)   │     │  → Strip RCT, dup detect            │
-└──────────┘     │  → Write to prp0                     │
+└──────────┘     │  → Write to prp0                    │
                  └─────────────────────────────────────┘
 ```
 
@@ -120,7 +120,7 @@ Loads and validates YAML configuration:
 ```
 ┌───────────┬───────────┬───────────┬───────────────────────────────┐
 │ Dst MAC   │ Src MAC   │ EtherType │ Payload                       │
-│ 01-15-... │ PRP MAC   │ 0x88fb    │ PRP-ID, LAN-ID, Node State   │
+│ 01-15-... │ PRP MAC   │ 0x88fb    │ PRP-ID, LAN-ID, Node State    │
 └───────────┴───────────┴───────────┴───────────────────────────────┘
 ```
 

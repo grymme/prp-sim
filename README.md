@@ -46,16 +46,16 @@ Right-click → Start. The container pulls the image automatically on first use.
 ┌──────────────────────────────────────────┐
 │              Docker Container            │
 │                                          │
-│   eth0 (LAN A) ──┐                      │
-│                   │   ┌─────────────┐    │
-│                   ├───│   prpd      │    │
-│   eth1 (LAN B) ──┘   │  (Go binary)│    │
-│                       │             │    │
-│   eth2 (Interlink) ──┤  • RCT      │    │
-│                       │  • Dup detect│   │
-│   prp0 (TAP, L2) ◀───┤  • Node table│   │
-│                       │  • Supervision│  │
-│                       └─────────────┘    │
+│   eth0 (LAN A) ──┐                       │
+│                  │   ┌────────────────┐  │
+│                  ├───│   prpd         │  │
+│   eth1 (LAN B) ──┘   │  (Go binary)   │  │
+│                      │                │  │
+│   eth2 (Interlink) ──┤  • RCT         │  │
+│                      │  • Dup detect  │  │
+│   prp0 (TAP, L2) ◀───┤  • Node table  │  │
+│                      │  • Supervision │  │
+│                      └────────────────┘  │
 └──────────────────────────────────────────┘
 ```
 
@@ -156,8 +156,8 @@ The `.gns3a` file (`gns3/westermo-prp.gns3a`) defines the GNS3 template:
 ### Example Topology
 
 ```
-         ┌─────────────┐
-         │ PRP LAN A   │
+         ┌──────────────┐
+         │ PRP LAN A    │
          └──────┬───────┘
                 │
     ┌───────────┼───────────┐
@@ -171,8 +171,8 @@ The `.gns3a` file (`gns3/westermo-prp.gns3a`) defines the GNS3 template:
     └───────────┼───────────┘
                 │
          ┌──────┴───────┐
-         │ PRP LAN B   │
-         └─────────────┘
+         │ PRP LAN B    │
+         └──────────────┘
 ```
 
 See [docs/gns3-setup.md](docs/gns3-setup.md) for detailed setup instructions.
