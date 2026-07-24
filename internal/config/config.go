@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 
@@ -72,6 +73,20 @@ func Load(path string) (*Config, error) {
 
 	if c.Interfaces.LanA == "" || c.Interfaces.LanB == "" {
 		return nil, fmt.Errorf("lan_a and lan_b interfaces must be specified")
+	}
+
+	// Auto-derive unique prp_id from hostname if set to 0 (default).
+	// GNS3 assigns a unique hostname to each container (e.g. "prp-sim-1").
+	if c.PRP.PRPID == 0 {
+		hostname, _ := os.Hostname()
+		if hostname != "" {
+			sum := sha256.Sum256([]byte(hostname))
+			// Use lower 16 bits of hash, range 1–65535
+			c.PRP.PRPID = (int(sum[0])<<8 | int(sum[1]))%65535 + 1
+			if c.Node.Name == "" {
+				c.Node.Name = hostname
+			}
+		}
 	}
 
 	return &c, nil
