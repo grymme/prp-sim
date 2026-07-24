@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"prp-gns3/internal/config"
 	"prp-gns3/internal/supervision"
@@ -29,6 +31,12 @@ func main() {
 	supervision.SendInterval(cfg.Interfaces.LanA, 2)
 
 	fmt.Println("loop: active")
+
+	// Block until signal
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	fmt.Println("prpd: shutting down")
 }
 
 func bindRaw(iface string) {
