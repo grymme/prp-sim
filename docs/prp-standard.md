@@ -232,62 +232,48 @@ interlink:
 
 ## Network Topologies
 
-### Star Topology
+### Dual Parallel LANs (Standard PRP Topology)
+
+PRP uses two completely independent LANs (A and B). There is no ring between them. Nodes connect to both LANs in parallel. If one LAN fails, traffic continues uninterrupted on the other.
 
 ```
-         ┌─────────────┐
-         │   Switch    │
-         │  (LAN A)    │
-         └──────┬──────┘
-                │
-    ┌───────────┼───────────┐
-    │           │           │
-┌───┴───┐   ┌───┴───┐   ┌───┴───┐
-│ DAN 1 │   │ DAN 2 │   │ RedBox│
-└───┬───┘   └───┬───┘   └───┬───┘
-    │           │           │
-    └───────────┼───────────┘
-                │
-         ┌──────┴──────┐
-         │   Switch    │
-         │  (LAN B)    │
-         └─────────────┘
+    +-------------+                              +-------------+
+    |  Switch A   |                              |  Switch B   |
+    |  (PRP LAN A)|                              | (PRP LAN B) |
+    +------+------+                              +------+------+
+           |                                           |
+           |                                           |
+    +------+------+    +----------+    +---------+     +------+------+
+    |    DAN 1    |    |  DAN 2   |    | RedBox  |     |  RedBox 2   |
+    |  A  +  B    |    | A  +  B  |    | A + B   |     |  A  +  B   |
+    |    ports    |    |  ports   |    | + SAN   |     |   ports    |
+    +------+------+    +----+-----+    +----+----+     +-----+-------+
+           |                |               |                |
+           |                |               +-SAN            |
+           |                |               (interlink)      |
+           |                |                |                |
+           +----------------+----------------+----------------+
+                          (no cross-link between LANs)
 ```
 
-### Ring Topology (with RedBoxes)
+**Key facts:**
 
-```
-┌──────────────┐
-│   Switch A   │
-└──────┬───────┘
-       │
-┌──────┴───────┐     ┌──────────────┐
-│    RedBox    │─────│   Switch B   │
-└──────┬───────┘     └──────┬───────┘
-       │                    │
-┌──────┴───────┐     ┌──────┴───────┐
-│   Switch C   │─────│    RedBox    │
-└──────────────┘     └──────────────┘
-```
+- **Two independent star networks** (LAN A and LAN B). No switch or router connects them.
+- **Each DAN connects to both LANs** simultaneously, sending duplicate frames on each.
+- **A RedBox bridges a SAN** (or a non-PRP device) into both PRP LANs via its interlink port.
+- **Failure isolation**: a failure on LAN A is invisible to applications on the SAN side - traffic simply continues on LAN B.
 
-### Mixed Topology
+Common PRP deployments:
 
-Combining PRP with HSR:
+- **DAN to DAN direct**: both devices connected directly to LAN A and LAN B. Simplest topology.
+- **DAN and SAN via RedBox**: a SAN connects through the RedBox interlink to both LANs.
+- **Two SANs via two RedBoxes**: each SAN behind its own RedBox on the same PRP network.
 
-```
-┌─────────────┐
-│  PRP LAN A  │
-└──────┬──────┘
-       │
-┌──────┴──────┐
-│  HSR-PRP    │
-│   RedBox    │
-└──────┬──────┘
-       │
-┌──────┴──────┐     ┌─────────────┐
-│  HSR Ring   │─────│  PRP LAN B  │
-└─────────────┘     └─────────────┘
-```
+### Note on HSR
+
+This container implements PRP only. HSR (High-availability Seamless Redundancy) uses a different topology (a ring, not two parallel LANs) and a different frame-tagging mechanism. Coupling an HSR ring with a PRP network requires a special QuadBox device and is out of scope for this implementation.
+
+For HSR simulation, use a separate HSR simulator.
 
 ## Performance Characteristics
 

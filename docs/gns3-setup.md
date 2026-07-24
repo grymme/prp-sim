@@ -85,30 +85,41 @@ docker pull ghcr.io/westermo/prp-gns3:latest
    - Click on another node, select an interface
    - Repeat for all connections
 
-### Typical Topology
+### Typical Topology (PRP Only)
+
+This container simulates PRP only (no HSR). Both LAN A and LAN B are independent star networks with no interconnection.
 
 ```
-                    ┌─────────────────┐
-                    │   Switch (A)    │
-                    │  (PRP LAN A)    │
-                    └────────┬────────┘
-                             │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-     ┌─────┴─────┐     ┌─────┴─────┐     ┌─────┴─────┐
-     │  RedBox   │     │  RedBox   │     │   SAN     │
-     │    1      │     │    2      │     │  Device   │
-     │ eth0  eth1│     │ eth0  eth1│     │    eth0   │
-     └─────┬─────┘     └─────┬─────┘     └───────────┘
-           │                 │
-           │   ┌─────────────┘
-           │   │
-     ┌─────┴─────────────────┐
-     │     Switch (B)        │
-     │    (PRP LAN B)        │
-     └───────────────────────┘
+    +-------------+                              +-------------+
+    |  Switch A   |                              |  Switch B   |
+    | (PRP LAN A) |                              | (PRP LAN B) |
+    +------+------+                              +------+------+
+           |                                           |
+           |                                           |
+    +------+------+     +-----------+     +-----+------+
+    |   DAN 1     |     |  RedBox   |     |   RedBox 2 |
+    | A-port +    |     | A-port +  |     | A-port +   |
+    | B-port      |     | B-port +  |     | B-port     |
+    +------+------+     |  SAN link |     +-----+------+
+           |            +-----+-----+           |
+           |                  |                 |
+           |                  +-SAN-            |
+           |                  (interlink)       |
+           |                                    |
+           +--------------------+---------------+
+                                |
+                          (no cross-link
+                           between LANs)
 ```
 
+Each node has two independent connections:
+- `eth0` -> Switch LAN A
+- `eth1` -> Switch LAN B
+
+Both LANs operate in parallel. If LAN A fails, traffic continues uninterrupted on LAN B.
+
+- A **RedBox** bridges a SAN (via `eth2` interlink) into both PRP LANs.
+- A **DAN** talks to LAN A and LAN B directly via its two interfaces. Applications use the `prp0` TAP inside the container.
 ### Connection Guide
 
 | Node Interface | Connect To | Cable Type |
