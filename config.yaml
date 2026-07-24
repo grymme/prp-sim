@@ -1,0 +1,37 @@
+node:
+  name: "prp-redbox-1"
+  role: redbox
+
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+
+virtual_iface:
+  name: prp0
+  mac: "auto"
+
+prp:
+  prp_id: 1
+  lan_id: "A"
+  suffix: "0x8100"
+  trailer_enabled: true
+
+supervision:
+  enabled: true
+  life_check_interval: 2s
+  node_forget_time: 64s
+  proxy_node_forget_time: 64s
+  node_reboot_interval: 500ms
+
+duplicate_detection:
+  entry_forget_time: 640ms
+  max_node_table_size: 256
+
+multicast_filter:
+  first_octet: "01-00-5E"
+
+interlink:
+  mode: san
+  forward_all: true
+  vlan_filter: []

@@ -1,1 +1,5 @@
-module prp-gns3\n\ngo 1.22
+module prp-gns3
+
+go 1.22
+
+require gopkg.in/yaml.v3 v3.0.1
