@@ -155,24 +155,30 @@ The `.gns3a` file (`gns3/westermo-prp.gns3a`) defines the GNS3 template:
 
 ### Example Topology
 
+PRP uses **two independent star networks** (LAN A and LAN B). There is no connection between them at the network layer. Every device has two independent links, one to each LAN.
+
 ```
-         ┌──────────────┐
-         │ PRP LAN A    │
-         └──────┬───────┘
-                │
-    ┌───────────┼───────────┐
-    │ eth0      │      eth0 │
-┌───┴───┐   ┌───┴───┐   ┌───┴───┐
-│RedBox │   │RedBox │   │  SAN  │
-│   1   │   │   2   │   │Device │
-└───┬───┘   └───┬───┘   └───┬───┘
-    │ eth1      │      eth2 │
-    │ eth2      │           │
-    └───────────┼───────────┘
-                │
-         ┌──────┴───────┐
-         │ PRP LAN B    │
-         └──────────────┘
+    +-------------+                              +-------------+
+    |  Switch A   |                              |  Switch B   |
+    | (PRP LAN A) |                              | (PRP LAN B) |
+    +------+------+                              +------+------+
+           |                                           |
+           | A-port                                    | B-port
+    +------+------+                          +--------+--------+
+    |   DAN 1     |                          |     DAN 2       |
+    | A + B ports |                          |   A + B ports   |
+    +------+------+                          +--------+--------+
+           |                                           |
+           | A-port                                    | B-port
+    +------+------+             +-------+      +--------+--------+
+    |  RedBox 1   |             |  SAN  |      |    RedBox 2     |
+    | A + B ports +-------------+device +------+ A + B ports     |
+    | + interlink |   eth2 link |       |      | + interlink    |
+    +-------------+             +-------+      +-----------------+
+
+  No switch or router connects LAN A and LAN B.
+  Each device receives two copies of every frame (one per LAN).
+  A RedBox bridges its SAN/interlink device into both LANs.
 ```
 
 See [docs/gns3-setup.md](docs/gns3-setup.md) for detailed setup instructions.
