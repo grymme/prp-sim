@@ -1,0 +1,27 @@
+# Git
+.git/
+.gitignore
+
+# Build artifacts
+prpd
+*.exe
+*.test
+*.out
+
+# Development
+tests/
+docs/
+gns3/
+Makefile
+README.md
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vendor (not vendored, but ignore if present)
+vendor/
