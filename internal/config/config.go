@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -86,6 +88,24 @@ func Load(path string) (*Config, error) {
 			if c.Node.Name == "" {
 				c.Node.Name = hostname
 			}
+		}
+	}
+
+	// Apply environment variable overrides
+	if role := os.Getenv("PRP_ROLE"); role != "" {
+		if role != "redbox" && role != "dan" {
+			return nil, fmt.Errorf("invalid PRP_ROLE: %s (must be redbox or dan)", role)
+		}
+		c.Node.Role = role
+	}
+	if prpID := os.Getenv("PRP_PRP_ID"); prpID != "" {
+		if id, err := strconv.Atoi(prpID); err == nil && id > 0 {
+			c.PRP.PRPID = id
+		}
+	}
+	if lanID := os.Getenv("PRP_LAN_ID"); lanID != "" {
+		if strings.EqualFold(lanID, "A") || strings.EqualFold(lanID, "B") {
+			c.PRP.LANID = strings.ToUpper(lanID)
 		}
 	}
 
