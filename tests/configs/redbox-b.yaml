@@ -19,6 +19,7 @@ prp:
 
 supervision:
   enabled: true
+  debug: true
   life_check_interval: 2s
 
 duplicate_detection:

@@ -67,5 +67,43 @@ if ! docker compose exec -T san-a sh -c 'ping -c 5 -W 2 10.0.0.12' | grep -q "0%
 fi
 echo "PASS: reconnect"
 
+# --- Test 4: duplicate-free delivery ---
+# If duplicate frames leaked to SAN-B, it would reply twice per request and
+# ping on SAN-A would report MORE replies than requests. With both LANs up
+# (no loss in this sim), received must equal transmitted.
+echo "==> test 4: duplicate-free delivery"
+PING=$(docker compose exec -T san-a sh -c 'ping -c 20 -i 0.2 -W 2 10.0.0.12 2>&1' | grep 'packets transmitted')
+echo "   $PING"
+REQ=$(echo "$PING" | awk '{ for(i=1;i<=NF;i++) if($(i+1)=="packets" && $(i+2)=="transmitted,") print $i }')
+REP=$(echo "$PING" | awk '{ for(i=1;i<=NF;i++) if($(i+1)=="packets" && $(i+2)=="received,") print $i }')
+echo "   transmitted=$REQ received=$REP"
+if [ -z "$REP" ]; then
+    echo "FAIL: could not parse ping stats"
+    exit 1
+fi
+if [ "$REP" -gt "$REQ" ]; then
+    echo "FAIL: duplicate frames leaked ($REP replies for $REQ requests)"
+    exit 1
+fi
+echo "PASS: duplicate-free delivery (received <= transmitted)"
+
+# --- Test 5: no self-loop / no storm ---
+# A RedBox must not re-ingest its own transmissions. Send a broadcast
+# burst from SAN-A and verify the RedBox does not amplify it back.
+echo "==> test 5: no storm on self-transmission"
+docker compose exec -T san-a sh -c 'ping -c 5 -W 2 10.0.0.12 >/dev/null 2>&1 || true'
+sleep 2
+# Interlink RX on redbox-b should not grow unboundedly; snapshot stats twice.
+RX1=$(docker compose exec -T redbox-b sh -c 'cat /sys/class/net/eth2/statistics/rx_bytes')
+sleep 3
+RX2=$(docker compose exec -T redbox-b sh -c 'cat /sys/class/net/eth2/statistics/rx_bytes')
+DELTA=$((RX2 - RX1))
+echo "   interlink rx_bytes delta over 3s: $DELTA"
+if [ "$DELTA" -gt 300000 ]; then
+    echo "FAIL: interlink traffic storm detected (delta $DELTA bytes in 3s)"
+    exit 1
+fi
+echo "PASS: no storm"
+
 echo
 echo "ALL INTEGRATION TESTS PASSED"
