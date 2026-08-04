@@ -42,7 +42,7 @@ The connection between a RedBox and a SAN. Operates at Layer 2, transparent to t
 │ Ethernet Frame with PRP RCT                                     │
 ├───────────┬───────────┬───────────┬───────────┬─────────────────┤
 │ Dst MAC   │ Src MAC   │ EtherType │ Payload   │ RCT             │
-│ (6 bytes) │ (6 bytes) │ (2 bytes) │ (46-1500) │ (4 bytes)       │
+│ (6 bytes) │ (6 bytes) │ (2 bytes) │ (46-1500) │ (6 bytes)       │
 └───────────┴───────────┴───────────┴───────────┴─────────────────┘
 ```
 
@@ -286,7 +286,7 @@ For HSR simulation, use a separate HSR simulator.
 
 - **Theoretical**: 2x bandwidth (both LANs active)
 - **Practical**: Limited by slowest LAN
-- **Overhead**: ~4 bytes per frame (RCT)
+- **Overhead**: 6 bytes per frame (RCT)
 
 ### Reliability
 
@@ -302,7 +302,7 @@ For HSR simulation, use a separate HSR simulator.
 | **Redundancy** | Parallel | Ring-based |
 | **Recovery Time** | 0 ms | 0 ms |
 | **Bandwidth** | 2x (both LANs) | 1x (ring) |
-| **Frame Size** | +4 bytes (RCT) | +4 bytes (HSR tag) |
+| **Frame Size** | +6 bytes (RCT) | +6 bytes (HSR tag) |
 | **Standard** | IEC 62439-3 | IEC 62439-3 |
 | **Use Case** | Substation automation | Industrial networks |
 

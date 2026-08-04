@@ -37,7 +37,7 @@ Manages PRP supervision frames (Ethertype `0x88fb`):
 - Advertises node identity and proxy nodes (RedBox mode)
 - Responds to supervision from other nodes
 
-### TAP Manager (`internal/tap/`)
+### TAP Manager (`internal/iface/`)
 
 Creates and manages the virtual TAP interface:
 - Uses Linux TUN/TAP driver (`/dev/net/tun`)

@@ -203,9 +203,10 @@ See [docs/gns3-setup.md](docs/gns3-setup.md) for detailed setup instructions.
 cmd/prpd/                  — daemon entrypoint
 internal/config/           — YAML config parser
 internal/engine/           — RCT encode/decode
+internal/prp/              — PRP node (RedBox/DAN) logic
+internal/iface/            — raw sockets, TAP, interface ioctls
 internal/nodetable/        — duplicate detection
 internal/supervision/      — 0x88fb supervision frames
-internal/tap/              — TAP interface management
 tests/                     — integration harness
 gns3/                      — GNS3 appliance files
 docs/                      — documentation
