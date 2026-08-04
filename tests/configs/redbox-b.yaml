@@ -1,0 +1,31 @@
+# RedBox B: bridges SAN B onto PRP LANs A and B.
+node:
+  name: "redbox-b"
+  role: redbox
+
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+
+virtual_iface:
+  name: prp0
+  mac: "auto"
+
+prp:
+  prp_id: 1
+  lan_id: "B"
+  trailer_enabled: true
+
+supervision:
+  enabled: true
+  life_check_interval: 2s
+
+duplicate_detection:
+  entry_forget_time: 640ms
+  max_node_table_size: 256
+
+interlink:
+  mode: san
+  forward_all: true
+  vlan_filter: []

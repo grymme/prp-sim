@@ -1,7 +1,7 @@
 # Dockerfile — multi-stage build for PRP GNS3 container
 #
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 WORKDIR /build
 
 # Cache dependencies (changes infrequently)

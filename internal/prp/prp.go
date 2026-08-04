@@ -134,6 +134,20 @@ func (n *Node) Start() error {
 	// all nodes in the same PRP network).
 	n.mac = n.nodeMAC()
 
+	// Raise the MTU of both PRP LAN ports so a full-size SAN frame
+	// (1514 B) plus the 6-byte RCT trailer fits on the wire. Standard
+	// MTU 1500 only allows 1500+18 = 1518 B; we need 1520.
+	for _, l := range []struct {
+		port string
+		name string
+	}{{"LAN A", n.Config.LanAInterface}, {"LAN B", n.Config.LanBInterface}} {
+		if err := iface.SetMTU(l.name, 1506); err != nil {
+			lanA.Close()
+			return fmt.Errorf("set MTU on %s (%s): %w", l.port, l.name, err)
+		}
+	}
+	log.Printf("prp: set MTU 1506 on %s and %s (RCT overhead)", n.Config.LanAInterface, n.Config.LanBInterface)
+
 	lanB, err := iface.CreateRawSocket(n.Config.LanBInterface)
 	if err != nil {
 		lanA.Close()

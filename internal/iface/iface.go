@@ -180,44 +180,39 @@ func CreateTAP(name string, mac string) (*TAPSocket, error) {
 		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
 	}
 
-	var ifr [unix.IFNAMSIZ]byte
-	copy(ifr[:], name)
-
-	flags := uint16(unix.IFF_TAP | unix.IFF_NO_PI | unix.IFF_RUNNING)
-	*(*uint16)(unsafe.Pointer(&ifr[unix.IFNAMSIZ-2])) = flags
-
-	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
-		file.Fd(),
-		unix.TUNSETIFF,
-		uintptr(unsafe.Pointer(&ifr[0])),
-	)
-	if errno != 0 {
+	// TUNSETIFF copies a full struct ifreq (40 bytes) from userspace and
+	// reads ifr_flags at offset 16. Passing a raw 16-byte name buffer with
+	// flags at offset 14 lets the kernel read uninitialized stack memory,
+	// so the first attempt fails with EINVAL and later ones may randomly
+	// succeed. Use unix.IoctlIfreq which manages the full layout.
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
 		file.Close()
-		return nil, fmt.Errorf("TUNSETIFF: %v", errno)
+		return nil, fmt.Errorf("ifreq(%s): %w", name, err)
+	}
+	ifr.SetUint16(uint16(unix.IFF_TAP | unix.IFF_NO_PI))
+
+	if err := unix.IoctlIfreq(int(file.Fd()), unix.TUNSETIFF, ifr); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("TUNSETIFF: %w", err)
 	}
 
-	// Read back actual interface name
-	actualName := string(ifr[:])
-	for i := 0; i < len(actualName); i++ {
-		if actualName[i] == 0 {
-			actualName = actualName[:i]
-			break
-		}
-	}
+	// Read back the actual interface name.
+	actualName := ifr.Name()
 
 	if mac != "" && mac != "auto" {
-		if err := setInterfaceMAC(file.Fd(), actualName, mac); err != nil {
+		if err := setInterfaceMAC(actualName, mac); err != nil {
 			file.Close()
 			return nil, fmt.Errorf("set MAC: %w", err)
 		}
 	}
 
-	if err := setInterfaceUp(file.Fd(), actualName); err != nil {
+	if err := setInterfaceUp(actualName); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("set interface up: %w", err)
 	}
 
+	// TAP interface up and running
 	return &TAPSocket{
 		name: actualName,
 		fd:   int(file.Fd()),
@@ -259,70 +254,108 @@ func ensureTunModule() error {
 	return nil
 }
 
+// SetMTU changes the MTU of a network interface (used to raise the PRP LAN
+// port MTU so a full-size SAN frame plus the 6-byte RCT fits on the wire).
+func SetMTU(name string, mtu int) error {
+	fd, err := ioctlSocket()
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+
+	var ifreq struct {
+		Name [unix.IFNAMSIZ]byte
+		MTU  int32
+		_    [20]byte
+	}
+	copy(ifreq.Name[:], name)
+	ifreq.MTU = int32(mtu)
+
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(fd),
+		unix.SIOCSIFMTU,
+		uintptr(unsafe.Pointer(&ifreq)),
+	)
+	if errno != 0 {
+		return fmt.Errorf("SIOCSIFMTU(%d): %v", mtu, errno)
+	}
+	return nil
+}
+
+// ioctlSocket returns a socket fd that network-interface ioctls can be
+// issued against. Interface ioctls (SIOCGIFFLAGS etc.) are only accepted on
+// socket fds — issuing them against the TAP char-device fd fails with EINVAL.
+func ioctlSocket() (int, error) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	return fd, nil
+}
+
 // setInterfaceMAC sets the hardware address of a network interface.
-// fd must be an open file descriptor that ioctl can be issued on (the TAP
-// fd or any socket); using the interface index here would fail with EBADF.
-func setInterfaceMAC(fd uintptr, name, mac string) error {
+func setInterfaceMAC(name, mac string) error {
 	hwAddr, err := net.ParseMAC(mac)
 	if err != nil {
 		return err
 	}
 
-	var ifreq struct {
-		Name   [unix.IFNAMSIZ]byte
-		HWAddr [32]byte
-		_      [20]byte
+	fd, err := ioctlSocket()
+	if err != nil {
+		return err
 	}
-	copy(ifreq.Name[:], name)
-	copy(ifreq.HWAddr[:], hwAddr)
+	defer unix.Close(fd)
+
+	// Kernel copies sizeof(struct ifreq) = 40 bytes; ifr_hwaddr (a
+	// sockaddr, 16 bytes) starts at offset 16.
+	var ifreq [40]byte
+	copy(ifreq[0:16], name)
+	if len(hwAddr) != 6 {
+		return fmt.Errorf("invalid MAC %q", mac)
+	}
+	ifreq[16] = unix.AF_UNSPEC // sockaddr family
+	copy(ifreq[22:28], hwAddr)
 
 	_, _, errno := unix.Syscall(
 		unix.SYS_IOCTL,
-		fd,
+		uintptr(fd),
 		unix.SIOCSIFHWADDR,
-		uintptr(unsafe.Pointer(&ifreq)),
+		uintptr(unsafe.Pointer(&ifreq[0])),
 	)
 	if errno != 0 {
 		return fmt.Errorf("SIOCSIFHWADDR: %v", errno)
 	}
-
 	return nil
 }
 
 // setInterfaceUp brings a network interface up.
-// fd must be an open file descriptor that ioctl can be issued on (the TAP fd
-// or any socket); using the interface index here would fail with EBADF.
-func setInterfaceUp(fd uintptr, name string) error {
-	var ifreq struct {
-		Name  [unix.IFNAMSIZ]byte
-		Flags uint16
-		_     [20]byte
+func setInterfaceUp(name string) error {
+	fd, err := ioctlSocket()
+	if err != nil {
+		return err
 	}
-	copy(ifreq.Name[:], name)
+	defer unix.Close(fd)
 
-	// Get current flags
-	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
-		fd,
-		unix.SIOCGIFFLAGS,
-		uintptr(unsafe.Pointer(&ifreq)),
-	)
-	if errno != 0 {
-		return fmt.Errorf("SIOCGIFFLAGS: %v", errno)
+	// Use unix.IoctlIfreq: it manages the full 40-byte struct ifreq so the
+	// flags (ifr_flags, offset 16) are read from a correctly laid-out
+	// buffer. A hand-rolled short struct lets the kernel copy 40 bytes
+	// over a smaller buffer (stack corruption / garbage flags).
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
 	}
 
-	// Set IFF_UP and IFF_RUNNING flags
-	ifreq.Flags |= unix.IFF_UP | unix.IFF_RUNNING
-
-	_, _, errno = unix.Syscall(
-		unix.SYS_IOCTL,
-		fd,
-		unix.SIOCSIFFLAGS,
-		uintptr(unsafe.Pointer(&ifreq)),
-	)
-	if errno != 0 {
-		return fmt.Errorf("SIOCSIFFLAGS: %v", errno)
+	// Get current flags.
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("SIOCGIFFLAGS: %w", err)
 	}
+	cur := ifr.Uint16()
 
+	// Set IFF_UP (IFF_RUNNING is a read-only state flag).
+	ifr.SetUint16(cur | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("SIOCSIFFLAGS: %w", err)
+	}
 	return nil
 }

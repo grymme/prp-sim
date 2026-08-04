@@ -1,22 +1,64 @@
 version: '3.8'
+
+# PRP integration test topology:
+#
+#   san-a --(san-net-a)-- redbox-a --(lan-a, lan-b)-- redbox-b --(san-net-b)-- san-b
+#
+# Each RedBox bridges its SAN onto both PRP LANs. If LAN A fails, traffic
+# continues on LAN B (zero recovery time).
+#
+# Interface naming inside each RedBox (Docker attaches in file order):
+#   eth0 = lan-a, eth1 = lan-b, eth2 = interlink (SAN side)
+# This matches the per-service config files in tests/configs/.
+
+x-redbox: &redbox
+  image: prp-sim:test
+  privileged: true
+  depends_on: []
+
 services:
   redbox-a:
-    image: ghcr.io/grymme/prp-sim:latest
-    privileged: true
+    <<: *redbox
+    volumes:
+      - ./configs/redbox-a.yaml:/etc/prp/config.yaml
     networks:
-      - lan-a
-      - lan-b
+      lan-a:
+      lan-b:
+      san-net:
+        aliases:
+          - redbox-a
+
   redbox-b:
-    image: ghcr.io/grymme/prp-sim:latest
+    <<: *redbox
+    volumes:
+      - ./configs/redbox-b.yaml:/etc/prp/config.yaml
+    networks:
+      lan-a:
+      lan-b:
+      san-net:
+        aliases:
+          - redbox-b
+
+  san-a:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.11/24 dev eth0 2>/dev/null; sleep 3600"]
     privileged: true
     networks:
-      - lan-a
-      - lan-b
-  san:
-    image: alpine
-    command: ["sh", "-c", "echo SAN; sleep 3600"]
+      san-net:
+        ipv4_address: 10.0.0.11
+
+  san-b:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.12/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
     networks:
-      - lan-a
+      san-net:
+        ipv4_address: 10.0.0.12
+
 networks:
   lan-a:
   lan-b:
+  san-net:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
