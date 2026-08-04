@@ -12,6 +12,11 @@
 
 The `.gns3a` appliance file automates the entire setup.
 
+> **Privileged mode is required.** prpd binds raw sockets (`CAP_NET_RAW`),
+> creates a TAP device (`/dev/net/tun`) and changes interface MTUs, so the
+> container must run privileged. The appliance schema cannot set this for
+> you — do it once after import (see Step 3).
+
 #### Step 1: Download the Appliance
 
 Clone the repository or download the appliance file:
@@ -34,6 +39,17 @@ The appliance file is at: `gns3/westermo-prp.gns3a`
    - Click **Finish**
 
 The appliance is now available in the device list.
+
+#### Step 3: Enable Privileged Mode (required once)
+
+1. Go to **Edit → Preferences → Docker containers**
+2. Select the **Westermo PRP Node** template
+3. Click **Edit**
+4. Tick **Privileged mode** (under *General settings* / *Container*)
+5. Click **OK**
+
+Without this the node fails at startup with `operation not permitted`
+when binding raw sockets.
 
 #### Step 3: Verify Installation
 
@@ -73,6 +89,9 @@ docker pull ghcr.io/grymme/prp-sim:latest
    - Adapter 1: `eth1 (LAN B)`
    - Adapter 2: `eth2 (Interlink)`
 5. Click **OK**
+
+> For manually created templates also tick **Privileged mode** in the
+> same dialog — the raw-socket/TAP setup requires it.
 
 ## Using the PRP Node
 
@@ -144,12 +163,17 @@ Both LANs operate in parallel. If LAN A fails, traffic continues uninterrupted o
 You should see:
 ```
 prpd: role=redbox name=prp-redbox-1 prp_id=1
-tap: created interface prp0
-raw: bound eth0
-raw: bound eth1
-supervision: sending 0x88fb on eth0 every 2s
-loop: active
+prp: bound to eth0 (index 3, MTU 1506)
+prp: TAP interface prp0 created
+prp: set MTU 1506 on eth0 and eth1 (RCT overhead)
+prp: bound to eth1 (index 4, MTU 1506)
+prp: bound to interlink eth2 (index 5, MTU 1506)
+prp: node redbox-1 started in redbox mode
 ```
+
+If you configured static IPs (`interfaces.ipv4` or `PRP_*_IP`), you will
+see a `prp: set static IP ...` line for each address before the node
+starts.
 
 ## Configuring Nodes
 
@@ -158,11 +182,16 @@ loop: active
 In GNS3, right-click the node → **Configure**:
 
 1. Go to **General settings**
-2. In **Environment variables**, add:
+2. In **Environment variables**, add one per line, for example:
    ```
    PRP_ROLE=dan
    PRP_PRP_ID=2
+   PRP_LAN_A_IP=10.0.0.10/24
+   PRP_INTERLINK_IP=192.168.1.5/24
    ```
+
+This is the easiest way to set per-node behaviour and port IPs in a
+multi-node topology (every node instance can have its own environment).
 
 ### Method 2: Custom Config File
 
@@ -280,11 +309,9 @@ To simulate separate PRP networks:
 
 ### HSR-PRP Coupling
 
-To connect HSR and PRP networks:
-
-1. Configure one RedBox with `interlink.mode: prp`
-2. Connect the interlink to the PRP network
-3. Set appropriate `lan_id` and `prp_id`
+HSR (ring) topology is **not supported** by this simulator (PRP only). The
+old `interlink.mode`/`lan_id` options that implied HSR support have been
+removed. For HSR, use a dedicated HSR implementation.
 
 ### Performance Tuning
 

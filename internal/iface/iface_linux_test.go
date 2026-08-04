@@ -58,3 +58,65 @@ func TestCreateTAPAutoMAC(t *testing.T) {
 		t.Fatalf("interface %s not found: %v", tap.Name(), err)
 	}
 }
+
+// TestSetInterfaceIP verifies static IPv4 assignment via the
+// SIOCSIFADDR/SIOCSIFNETMASK ioctls (requires root, skipped otherwise).
+func TestSetInterfaceIP(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("requires root")
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("no /dev/net/tun")
+	}
+
+	tap, err := CreateTAP("prptest2", "auto")
+	if err != nil {
+		t.Fatalf("CreateTAP failed: %v", err)
+	}
+	defer tap.Close()
+
+	if err := SetInterfaceUp(tap.Name()); err != nil {
+		t.Fatalf("SetInterfaceUp: %v", err)
+	}
+	if err := SetInterfaceIP(tap.Name(), "192.0.2.7/24"); err != nil {
+		t.Fatalf("SetInterfaceIP: %v", err)
+	}
+
+	addrs, err := net.InterfaceByName(tap.Name())
+	if err != nil {
+		t.Fatalf("interface lookup: %v", err)
+	}
+	ifList, err := addrs.Addrs()
+	if err != nil {
+		t.Fatalf("list addresses: %v", err)
+	}
+	var found bool
+	for _, a := range ifList {
+		if a.String() == "192.0.2.7/24" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("address 192.0.2.7/24 not present on %s: %v", tap.Name(), ifList)
+	}
+}
+
+// TestSetInterfaceIPRejectsIPv6: only IPv4 CIDRs are supported.
+func TestSetInterfaceIPRejectsIPv6(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("requires root")
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("no /dev/net/tun")
+	}
+
+	tap, err := CreateTAP("prptest3", "auto")
+	if err != nil {
+		t.Fatalf("CreateTAP failed: %v", err)
+	}
+	defer tap.Close()
+
+	if err := SetInterfaceIP(tap.Name(), "fe80::1/64"); err == nil {
+		t.Fatal("expected error for IPv6 CIDR")
+	}
+}

@@ -189,45 +189,21 @@ Some implementations filter multicast based on destination MAC:
 
 ```yaml
 multicast_filter:
-  first_octet: "01-00-5E"  # Standard multicast prefix
-  vlan_filter: []           # Empty = forward all
+  first_octet: "01-00-5E"  # Standard multicast prefix (IPv4 multicast)
 ```
 
 ## HSR-PRP Coupling
 
-### Overview
+HSR (ring topology) is **not supported** by this simulator — it implements
+PRP only (see below). The config keys that used to imply HSR support
+(`interlink.mode`, `prp.lan_id`) have been removed. For HSR use a
+dedicated HSR implementation (e.g. the Linux kernel `hsr` module or a
+vendor device).
 
-HSR (High-availability Seamless Redundancy) and PRP can be coupled using special RedBoxes:
-
-- **HSR-PRP RedBox**: Connects an HSR ring to a PRP network
-- **QuadBox**: Connects two HSR rings or PRP networks
-
-### Coupling Rules
-
-1. Frames entering from PRP to HSR get a PathId added
-2. Frames entering from HSR to PRP get RCT trailer
-3. Duplicate detection applies across both networks
-4. PRP-ID must match within the same network
-
-### Configuration Example
-
-```yaml
-node:
-  name: "hsr-prp-coupling"
-  role: redbox
-
-interfaces:
-  lan_a: eth0      # PRP LAN A
-  lan_b: eth1      # HSR ring
-  interlink: eth2  # PRP LAN B
-
-prp:
-  prp_id: 1
-  lan_id: "A"
-
-interlink:
-  mode: prp        # Interlink operates in PRP mode
-```
+> This container implements PRP only. HSR uses a different topology (a
+> ring, not two parallel LANs) and a different frame-tagging mechanism.
+> Coupling an HSR ring with a PRP network requires a special QuadBox
+> device and is out of scope for this implementation.
 
 ## Network Topologies
 

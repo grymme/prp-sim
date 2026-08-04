@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,23 +28,24 @@ func containsInt(xs []int, v int) bool {
 
 // Node represents a PRP network node.
 type Node struct {
-	Config           *Config
-	LanA             iface.PacketPort
-	LanB             iface.PacketPort
-	Interlink        iface.PacketPort
-	Tap              iface.PacketPort
-	mac              []byte
-	supSeq           uint16
-	seqMgr           *engine.SequenceManager
-	frameBuffer      chan frameEvent
-	stopChan         chan struct{}
-	stopLock         sync.Mutex
-	cleanupTimer     *time.Timer
-	supervisionSeen  map[string]time.Time
-	dupTable         *nodetable.Table
-	proxyTable       map[string]time.Time
-	proxyTableMu     sync.Mutex
-	proxyTableForget time.Duration
+	Config            *Config
+	LanA              iface.PacketPort
+	LanB              iface.PacketPort
+	Interlink         iface.PacketPort
+	Tap               iface.PacketPort
+	mac               []byte
+	supSeq            uint16
+	seqMgr            *engine.SequenceManager
+	frameBuffer       chan frameEvent
+	stopChan          chan struct{}
+	stopLock          sync.Mutex
+	cleanupTimer      *time.Timer
+	supervisionSeen   map[string]time.Time
+	supervisionForget time.Duration
+	dupTable          *nodetable.Table
+	proxyTable        map[string]time.Time
+	proxyTableMu      sync.Mutex
+	proxyTableForget  time.Duration
 }
 
 // StopChan returns the channel that is closed when the node is stopped.
@@ -79,6 +81,12 @@ type Config struct {
 	EntryForgetMs int
 	// MaxNodeTableSize: duplicate-detection table cap.
 	MaxNodeTableSize int
+	// ProxyNodeForgetMs: how long SAN MACs learned behind the interlink
+	// stay valid when ForwardAll is false.
+	ProxyNodeForgetMs int
+	// NodeForgetMs: how long a peer node is considered alive after its
+	// last supervision frame.
+	NodeForgetMs int
 }
 
 type frameEvent struct {
@@ -100,30 +108,31 @@ func NewNode(cfg *Config) *Node {
 	if forgetMs <= 0 {
 		forgetMs = 640
 	}
+	proxyForgetMs := cfg.ProxyNodeForgetMs
+	if proxyForgetMs <= 0 {
+		proxyForgetMs = 64000 // supervision.proxy_node_forget_time default (64s)
+	}
+	supForgetMs := cfg.NodeForgetMs
+	if supForgetMs <= 0 {
+		supForgetMs = 64000 // supervision.node_forget_time default (64s)
+	}
 	return &Node{
-		Config:           cfg,
-		seqMgr:           engine.NewSequenceManager(),
-		frameBuffer:      make(chan frameEvent, 10000),
-		stopChan:         make(chan struct{}),
-		dupTable:         nodetable.NewTable(maxSize),
-		proxyTable:       make(map[string]time.Time),
-		proxyTableForget: time.Duration(forgetMs) * time.Millisecond,
+		Config:            cfg,
+		seqMgr:            engine.NewSequenceManager(),
+		frameBuffer:       make(chan frameEvent, 10000),
+		stopChan:          make(chan struct{}),
+		dupTable:          nodetable.NewTable(maxSize),
+		proxyTable:        make(map[string]time.Time),
+		proxyTableForget:  time.Duration(proxyForgetMs) * time.Millisecond,
+		supervisionForget: time.Duration(supForgetMs) * time.Millisecond,
 	}
 }
 
 // Start initializes interfaces and starts the main processing loops.
 func (n *Node) Start() error {
-	// Create TAP interface (for DAN mode, but also useful in RedBox)
-	if n.Config.TapName != "" {
-		tap, err := iface.CreateTAP(n.Config.TapName, n.Config.TapMAC)
-		if err != nil {
-			return fmt.Errorf("create TAP: %w", err)
-		}
-		n.Tap = tap
-		log.Printf("prp: TAP interface %s created", tap.Name())
-	}
-
-	// Bind raw sockets to physical interfaces
+	// Bind raw socket to LAN A first: its hardware address is the node
+	// identity (used for the TAP MAC and for the unicast destination
+	// filter in DAN mode).
 	lanA, err := iface.CreateRawSocket(n.Config.LanAInterface)
 	if err != nil {
 		return fmt.Errorf("bind LAN A (%s): %w", n.Config.LanAInterface, err)
@@ -131,9 +140,21 @@ func (n *Node) Start() error {
 	n.LanA = lanA
 	log.Printf("prp: bound to %s (index %d, MTU %d)", lanA.Name(), lanA.IfIndex(), lanA.MTU())
 
+	// Create TAP interface (for DAN mode, but also useful in RedBox).
+	if n.Config.TapName != "" {
+		tap, err := iface.CreateTAP(n.Config.TapName, n.tapMAC())
+		if err != nil {
+			n.closePorts()
+			return fmt.Errorf("create TAP: %w", err)
+		}
+		n.Tap = tap
+		log.Printf("prp: TAP interface %s created", tap.Name())
+	}
+
 	// The node MAC is the MAC of the LAN A interface (real hardware MAC,
 	// unique per node — never derived from the PRP ID, which is shared by
-	// all nodes in the same PRP network).
+	// all nodes in the same PRP network). An explicitly configured
+	// virtual_iface.mac overrides it.
 	n.mac = n.nodeMAC()
 
 	// Raise the MTU of both PRP LAN ports so a full-size SAN frame
@@ -144,7 +165,7 @@ func (n *Node) Start() error {
 		name string
 	}{{"LAN A", n.Config.LanAInterface}, {"LAN B", n.Config.LanBInterface}} {
 		if err := iface.SetMTU(l.name, 1506); err != nil {
-			lanA.Close()
+			n.closePorts()
 			return fmt.Errorf("set MTU on %s (%s): %w", l.port, l.name, err)
 		}
 	}
@@ -152,7 +173,7 @@ func (n *Node) Start() error {
 
 	lanB, err := iface.CreateRawSocket(n.Config.LanBInterface)
 	if err != nil {
-		lanA.Close()
+		n.closePorts()
 		return fmt.Errorf("bind LAN B (%s): %w", n.Config.LanBInterface, err)
 	}
 	n.LanB = lanB
@@ -162,12 +183,20 @@ func (n *Node) Start() error {
 	if n.Config.Role == "redbox" && n.Config.InterlinkInterface != "" {
 		interlink, err := iface.CreateRawSocket(n.Config.InterlinkInterface)
 		if err != nil {
-			lanA.Close()
-			lanB.Close()
+			n.closePorts()
 			return fmt.Errorf("bind interlink (%s): %w", n.Config.InterlinkInterface, err)
 		}
 		n.Interlink = interlink
 		log.Printf("prp: bound to interlink %s (index %d, MTU %d)", interlink.Name(), interlink.IfIndex(), interlink.MTU())
+
+		// Raise the interlink MTU too so a full 1514-byte SAN frame
+		// (e.g. VLAN-tagged) forwarded from the LANs fits after the RCT
+		// is stripped.
+		if err := iface.SetMTU(n.Config.InterlinkInterface, 1506); err != nil {
+			n.closePorts()
+			return fmt.Errorf("set MTU on interlink (%s): %w", n.Config.InterlinkInterface, err)
+		}
+		log.Printf("prp: set MTU 1506 on interlink %s", n.Config.InterlinkInterface)
 	}
 
 	// Start cleanup timer for node table
@@ -189,6 +218,23 @@ func (n *Node) Start() error {
 
 	log.Printf("prp: node %s started in %s mode", n.Config.NodeName, n.Config.Role)
 	return nil
+}
+
+// closePorts closes every bound port (used on startup failure so no
+// interfaces are left half-configured).
+func (n *Node) closePorts() {
+	if n.Tap != nil {
+		n.Tap.Close()
+	}
+	if n.LanA != nil {
+		n.LanA.Close()
+	}
+	if n.LanB != nil {
+		n.LanB.Close()
+	}
+	if n.Interlink != nil {
+		n.Interlink.Close()
+	}
 }
 
 // Stop shuts down the node and releases all resources.
@@ -224,12 +270,28 @@ func (n *Node) Stop() {
 	log.Printf("prp: node %s stopped", n.Config.NodeName)
 }
 
-// periodicCleanup removes expired entries from the node table.
+// periodicCleanup removes expired entries from the node table and drops
+// peers that have not sent a supervision frame within node_forget_time.
 func (n *Node) periodicCleanup() {
 	if n.dupTable.Cleanup() > 0 {
 		log.Printf("prp: node table cleaned up, size now %d", n.dupTable.Size())
 	}
+	n.cleanupSupervisionSeen()
 	n.cleanupTimer.Reset(1 * time.Second)
+}
+
+// cleanupSupervisionSeen forgets peers whose last supervision frame is
+// older than supervision.node_forget_time. Keeps the liveness map bounded.
+func (n *Node) cleanupSupervisionSeen() {
+	if len(n.supervisionSeen) == 0 {
+		return
+	}
+	cutoff := time.Now().Add(-n.supervisionForget)
+	for mac, last := range n.supervisionSeen {
+		if last.Before(cutoff) {
+			delete(n.supervisionSeen, mac)
+		}
+	}
 }
 
 // readLoop reads frames from a raw socket interface.
@@ -324,8 +386,11 @@ func (n *Node) handleFrame(event frameEvent) {
 	// Get EtherType to classify the frame
 	etherType := engine.GetEtherType(frame)
 
-	// Handle supervision frames (0x88fb)
-	if etherType == 0x88fb {
+	// Handle supervision frames (0x88fb). Only frames received on the PRP
+	// LANs are supervision traffic; a 0x88fb frame arriving on the
+	// interlink or the TAP is ordinary data and must be forwarded like
+	// any other frame.
+	if etherType == 0x88fb && (event.iface == "lan_a" || event.iface == "lan_b") {
 		n.handleSupervisionFrame(event)
 		return
 	}
@@ -487,18 +552,47 @@ func (n *Node) shouldForwardToTap(frame []byte) bool {
 	return len(frame) >= 6 && len(n.mac) == 6 && bytes.Equal(n.mac, frame[0:6])
 }
 
-// multicastAllowed applies the configured multicast first-octet filter.
+// multicastAllowed applies the configured multicast filter. The pattern is
+// a hex-byte prefix of the destination MAC, e.g. "01" (IPv4 multicast),
+// "01-00-5E" or "33-33". An empty or unparsable pattern allows all
+// multicast.
 func (n *Node) multicastAllowed(frame []byte) bool {
-	filter := n.Config.MulticastFirstOctet
-	if filter == "" {
+	prefix := parseMulticastPattern(n.Config.MulticastFirstOctet)
+	if len(prefix) == 0 {
 		return true
 	}
-	// Expects a hex byte like "01" (from "01-00-5E" style config).
-	first, err := strconv.ParseUint(filter, 16, 8)
-	if err != nil {
-		return true
+	if len(frame) < len(prefix) {
+		return false
 	}
-	return len(frame) > 0 && frame[0] == byte(first)
+	for i, b := range prefix {
+		if frame[i] != b {
+			return false
+		}
+	}
+	return true
+}
+
+// parseMulticastPattern converts a multicast filter pattern ("01",
+// "01-00-5E", "33:33", "0x01005e") into the destination-MAC byte prefix it
+// matches. Returns nil when the pattern is empty or malformed (in which
+// case the filter is disabled).
+func parseMulticastPattern(pattern string) []byte {
+	hex := strings.ToLower(pattern)
+	hex = strings.TrimPrefix(hex, "0x")
+	hex = strings.ReplaceAll(hex, "-", "")
+	hex = strings.ReplaceAll(hex, ":", "")
+	if hex == "" || len(hex)%2 != 0 || len(hex) > 12 {
+		return nil
+	}
+	out := make([]byte, 0, len(hex)/2)
+	for i := 0; i < len(hex); i += 2 {
+		b, err := strconv.ParseUint(hex[i:i+2], 16, 8)
+		if err != nil {
+			return nil
+		}
+		out = append(out, byte(b))
+	}
+	return out
 }
 
 // handleInterlinkFrame processes frames arriving from the interlink.
@@ -637,11 +731,37 @@ func (n *Node) SendSupervisionFrame() {
 	}
 }
 
-// nodeMAC returns the node's MAC address. It prefers the TAP MAC when
-// configured, otherwise the MAC of the LAN A interface. It must never be
-// derived from the PRP ID — all nodes in a PRP network share the PRP ID,
-// which would cause MAC collisions.
+// tapMAC decides the MAC address for the TAP interface. An explicitly
+// configured virtual_iface.mac wins; "auto" (the default) copies the LAN A
+// interface MAC, matching the Linux kernel's HSR/PRP behaviour where the
+// virtual interface inherits the slave's address. This is what makes
+// DAN-mode unicast delivery work: receivers address frames to the MAC the
+// peer advertises, and the node's unicast filter compares against the same
+// address.
+func (n *Node) tapMAC() string {
+	if mac := n.Config.TapMAC; mac != "" && mac != "auto" {
+		return mac
+	}
+	if ifc, err := net.InterfaceByName(n.Config.LanAInterface); err == nil {
+		return ifc.HardwareAddr.String()
+	}
+	return "" // let the kernel pick (only possible without a real LAN A)
+}
+
+// nodeMAC returns the node's MAC address. It must never be derived from
+// the PRP ID — all nodes in a PRP network share the PRP ID, which would
+// cause MAC collisions. Precedence: explicit virtual_iface.mac, then the
+// LAN A interface hardware address, then any MAC set programmatically
+// (tests), then a synthetic locally-administered MAC derived from the PRP
+// ID as a last resort.
 func (n *Node) nodeMAC() []byte {
+	// An explicit TAP MAC is the node identity the rest of the network
+	// addresses frames to.
+	if mac := n.Config.TapMAC; mac != "" && mac != "auto" {
+		if hw, err := net.ParseMAC(mac); err == nil {
+			return hw
+		}
+	}
 	// Use the LAN A interface hardware address when bound to a real
 	// interface.
 	if n.Config.LanAInterface != "" && n.mac == nil {

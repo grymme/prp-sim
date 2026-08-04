@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"prp-gns3/internal/config"
+	"prp-gns3/internal/iface"
 	"prp-gns3/internal/prp"
 )
 
@@ -51,7 +52,24 @@ func main() {
 	if d, err := time.ParseDuration(cfg.DuplicateDetection.EntryForgetTime); err == nil && d > 0 {
 		prpCfg.EntryForgetMs = int(d / time.Millisecond)
 	}
+	// supervision.proxy_node_forget_time: lifetime of SAN MACs learned
+	// behind the interlink (used when interlink.forward_all is false).
+	if d, err := time.ParseDuration(cfg.Supervision.ProxyNodeForgetTime); err == nil && d > 0 {
+		prpCfg.ProxyNodeForgetMs = int(d / time.Millisecond)
+	}
+	// supervision.node_forget_time: how long a peer stays alive in the
+	// node table after its last supervision frame.
+	if d, err := time.ParseDuration(cfg.Supervision.NodeForgetTime); err == nil && d > 0 {
+		prpCfg.NodeForgetMs = int(d / time.Millisecond)
+	}
 	prpCfg.MaxNodeTableSize = cfg.DuplicateDetection.MaxNodeTableSize
+
+	// Apply optional static IPv4 addresses from the config (interfaces.ipv4)
+	// or the PRP_*_IP environment variables. The PRP engine itself is
+	// Layer-2, so this is purely for convenience (management access, DAN
+	// application traffic, debugging). Failures are logged but do not stop
+	// the node.
+	applyStaticIPs(cfg)
 
 	// Create and start the PRP node
 	node := prp.NewNode(prpCfg)
@@ -91,4 +109,33 @@ func main() {
 	<-sig
 	fmt.Println("prpd: shutting down")
 	node.Stop()
+}
+
+// applyStaticIPs assigns the optional per-port IPv4 addresses from the
+// configuration. The PRP engine forwards Ethernet frames and never looks at
+// IPs, so this is a convenience feature: give the node management or DAN
+// application connectivity without hand-running ip(8) in every container.
+func applyStaticIPs(cfg *config.Config) {
+	for _, p := range []struct {
+		port string
+		name string
+		cidr string
+	}{
+		{"LAN A", cfg.Interfaces.LanA, cfg.Interfaces.IPv4.LanA},
+		{"LAN B", cfg.Interfaces.LanB, cfg.Interfaces.IPv4.LanB},
+		{"Interlink", cfg.Interfaces.Interlink, cfg.Interfaces.IPv4.Interlink},
+	} {
+		if p.name == "" || p.cidr == "" {
+			continue
+		}
+		// Ensure the link is up so the address becomes usable.
+		if err := iface.SetInterfaceUp(p.name); err != nil {
+			log.Printf("prp: warning: could not bring up %s: %v", p.name, err)
+		}
+		if err := iface.SetInterfaceIP(p.name, p.cidr); err != nil {
+			log.Printf("prp: warning: could not set %s = %s on %s: %v", p.port, p.cidr, p.name, err)
+			continue
+		}
+		log.Printf("prp: set static IP %s on %s (%s)", p.cidr, p.name, p.port)
+	}
 }

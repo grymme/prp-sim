@@ -1,6 +1,6 @@
 {
   "appliance_id": "c3d8e4f0-8b1a-4f2c-a123-456789abcdef",
-  "name": "Westermo PRP Node",
+  "name": "PRP Node",
   "category": "guest",
   "description": "PRP (IEC 62439-3) RedBox/DAN simulation node for GNS3",
   "vendor_name": "Westermo (simulated)",
@@ -9,10 +9,14 @@
   "registry_version": 6,
   "status": "experimental",
   "maintainer": "westermo",
-  "maintainer_email": "prp@westermo.sim",
+  "maintainer_email": "henrik.envall@westermo.com",
   "docker": {
     "adapters": 3,
     "image": "ghcr.io/grymme/prp-sim:latest",
-    "console_type": "telnet"
+    "console_type": "telnet",
+    "environment": "PRP_ROLE=redbox"
+  },
+  "symbols": {
+    "default": "symbols/prp-node.svg"
   }
 }

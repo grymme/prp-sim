@@ -14,12 +14,10 @@ virtual_iface:
 
 prp:
   prp_id: 1
-  lan_id: "A"
   trailer_enabled: true
 
 supervision:
   enabled: true
-  debug: true
   life_check_interval: 2s
 
 duplicate_detection:
@@ -27,6 +25,5 @@ duplicate_detection:
   max_node_table_size: 256
 
 interlink:
-  mode: san
   forward_all: true
   vlan_filter: []

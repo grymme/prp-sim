@@ -301,6 +301,133 @@ func TestMulticastFilter(t *testing.T) {
 	}
 }
 
+// TestMulticastFilterFullPrefix verifies that the default-style pattern
+// "01-00-5E" (the whole multicast group prefix) filters correctly, not
+// just the first byte. This is a regression test for the old behaviour
+// where the hyphenated pattern failed to parse and disabled filtering.
+func TestMulticastFilterFullPrefix(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	n.Config.MulticastFirstOctet = "01-00-5E"
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+
+	// 01-00-5E-xx-xx-xx (IPv4 multicast) passes: full prefix matches.
+	mcPass := ethFrame(src, [6]byte{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01})
+	enc := engine.EncodeRCT(mcPass, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("multicast 01-00-5E should pass, got %d", len(inter.frames))
+	}
+
+	// 01-00-5F-xx-xx-xx: same first byte, different third byte -> blocked.
+	mcSameFirst := ethFrame(src, [6]byte{0x01, 0x00, 0x5f, 0x00, 0x00, 0x01})
+	enc = engine.EncodeRCT(mcSameFirst, 1, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("multicast 01-00-5F should be filtered, got %d forwards", len(inter.frames))
+	}
+
+	// 33-33-00-00-00-01 (IPv6) blocked.
+	mcFail := ethFrame(src, [6]byte{0x33, 0x33, 0x00, 0x00, 0x00, 0x01})
+	enc = engine.EncodeRCT(mcFail, 2, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("multicast 33-33 should be filtered, got %d forwards", len(inter.frames))
+	}
+}
+
+// TestParseMulticastPattern exercises the pattern parser directly.
+func TestParseMulticastPattern(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []byte
+	}{
+		{"01", []byte{0x01}},
+		{"01-00-5E", []byte{0x01, 0x00, 0x5e}},
+		{"33:33", []byte{0x33, 0x33}},
+		{"0x01005e", []byte{0x01, 0x00, 0x5e}},
+		{"", nil},
+		{"01-00-5E-00-00-00-01", nil}, // too long (>6 bytes)
+		{"xyz", nil},                  // not hex
+		{"0", nil},                    // odd length
+	}
+	for _, tc := range cases {
+		got := parseMulticastPattern(tc.in)
+		if !bytes.Equal(got, tc.want) {
+			t.Errorf("parseMulticastPattern(%q) = %x, want %x", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestProxyTableForget verifies the SAN proxy learning table uses the
+// supervision.proxy_node_forget_time lifetime (64s default), not the
+// duplicate-detection entry lifetime (640ms).
+func TestProxyTableForget(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	// Configure a long proxy lifetime, short duplicate-entry lifetime.
+	n.proxyTableForget = 60 * time.Second
+	n.dupTable.Cleanup()
+
+	sanMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	src := [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
+
+	// SAN sends a frame on the interlink -> MAC is learned.
+	sanFrame := ethFrame(sanMAC, [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06})
+	n.handleInterlinkFrame(frameEvent{iface: "interlink", frame: sanFrame, frameSz: len(sanFrame)})
+
+	// A LAN frame to the SAN arrives well after the 640ms duplicate-entry
+	// window would have expired, but within the proxy window.
+	time.Sleep(700 * time.Millisecond)
+	frame := ethFrame(src, sanMAC)
+	enc := engine.EncodeRCT(frame, 1, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("learned SAN MAC should still be valid after 640ms, got %d forwards", len(inter.frames))
+	}
+}
+
+// TestSupervisionSeenExpiry verifies supervision liveness entries are
+// forgotten after supervision.node_forget_time, keeping the map bounded.
+func TestSupervisionSeenExpiry(t *testing.T) {
+	n, _, _, _ := newNode()
+	n.supervisionForget = 100 * time.Millisecond
+	n.supervisionSeen = map[string]time.Time{
+		"02:50:50:aa:bb:cc": time.Now().Add(-1 * time.Second), // stale
+		"02:50:50:dd:ee:ff": time.Now(),                       // fresh
+	}
+	n.cleanupSupervisionSeen()
+	if _, ok := n.supervisionSeen["02:50:50:aa:bb:cc"]; ok {
+		t.Error("stale supervision entry should have been forgotten")
+	}
+	if _, ok := n.supervisionSeen["02:50:50:dd:ee:ff"]; !ok {
+		t.Error("fresh supervision entry must survive cleanup")
+	}
+}
+
+// TestSupervisionOnInterlinkIsData: a 0x88fb frame arriving on the
+// interlink must be treated as ordinary data (forwarded to both LANs), not
+// consumed as a supervision frame.
+func TestSupervisionOnInterlinkIsData(t *testing.T) {
+	n, lanA, lanB, _ := newNode()
+	n.dupTable.Cleanup()
+
+	sup := make([]byte, 60)
+	copy(sup[0:6], []byte{0x01, 0x15, 0x4e, 0x00, 0x01, 0x00})
+	copy(sup[6:12], []byte{0x02, 0x50, 0x50, 0xaa, 0xbb, 0xcc})
+	sup[12], sup[13] = 0x88, 0xfb // EtherType 0x88FB
+
+	n.handleFrame(frameEvent{iface: "interlink", frame: sup, frameSz: len(sup)})
+	if len(lanA.frames) != 1 || len(lanB.frames) != 1 {
+		t.Fatalf("0x88fb on interlink must be forwarded, got A=%d B=%d", len(lanA.frames), len(lanB.frames))
+	}
+	if len(n.supervisionSeen) != 0 {
+		t.Fatal("0x88fb on interlink must not be parsed as supervision")
+	}
+}
+
 // TestDANUnicastFilter verifies DAN mode only delivers unicast frames
 // addressed to the node's own MAC.
 func TestDANUnicastFilter(t *testing.T) {

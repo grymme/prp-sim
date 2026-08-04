@@ -1,36 +1,142 @@
+# ============================================================================
+# PRP Simulation Node — configuration reference
+# ============================================================================
+# This file is read by prpd at startup (default path /etc/prp/config.yaml)
+# and is also copied into the Docker image, so it doubles as documentation
+# for every option. All values shown are the defaults — remove or change
+# only what you need.
+#
+# Environment-variable overrides (take precedence over this file):
+#   PRP_CONFIG_PATH    path to an alternative config file
+#   PRP_ROLE           "redbox" or "dan"          (overrides node.role)
+#   PRP_PRP_ID         1-65535                    (overrides prp.prp_id)
+#   PRP_LAN_A_IP       CIDR, e.g. "10.0.0.1/24"   (overrides interfaces.ipv4.lan_a)
+#   PRP_LAN_B_IP       CIDR, e.g. "10.0.0.2/24"   (overrides interfaces.ipv4.lan_b)
+#   PRP_INTERLINK_IP   CIDR, e.g. "10.0.0.3/24"   (overrides interfaces.ipv4.interlink)
+#   DEBUG_FRAMES       1 = log every forwarded/dropped frame
+#
+# Environment variables are the easiest way to customise a node in GNS3:
+# every GNS3 Docker template lets you define them per node instance.
+# ============================================================================
+
 node:
+  # Human-readable name. Appears in logs and (for DAN mode) in the
+  # supervision frames. If empty, the container hostname is used.
   name: "prp-redbox-1"
+
+  # Operating mode:
+  #   redbox — L2 bridge between the SAN (interlink port) and the two PRP
+  #            LANs. Frames from the interlink are duplicated onto LAN A
+  #            and LAN B with RCT trailers; frames from the LANs are
+  #            de-duplicated and forwarded to the interlink.
+  #   dan    — a "dual attached node": applications talk to prp0 (TAP) and
+  #            prpd adds the RCT trailer and duplicates onto both LANs.
   role: redbox
 
 interfaces:
+  # Kernel interface names of the physical ports. In GNS3 these are
+  # deterministic: eth0 = LAN A, eth1 = LAN B, eth2 = interlink.
   lan_a: eth0
   lan_b: eth1
-  interlink: eth2
+  interlink: eth2          # only used in redbox mode
+
+  # Optional static IPv4 addresses, one per port, in CIDR notation.
+  # The PRP engine itself is Layer-2 and never looks at IP addresses —
+  # this is a convenience so the node can be pinged/SSH'd or so DAN
+  # applications have an IP on the prp0 endpoint without running
+  # `ip addr add` by hand.
+  #
+  # Examples:
+  #   lan_a: "10.1.0.10/24"        # management IP on LAN A
+  #   interlink: "192.168.1.5/24"  # management IP on the SAN side
+  #
+  # Leave empty (or omit the whole ipv4 block) for unnumbered ports.
+  # IPv4 only; IPv6 must be configured manually with `ip addr add`.
+  ipv4:
+    lan_a: ""
+    lan_b: ""
+    interlink: ""
 
 virtual_iface:
+  # TAP interface created by prpd. In DAN mode this is where your
+  # application binds (it behaves like a normal Ethernet NIC); in redbox
+  # mode it is still created and can be used for local management.
   name: prp0
+
+  # MAC address of the TAP interface.
+  #   auto   (default) — copy the MAC of the LAN A port. This is the
+  #          correct behaviour for DAN nodes: the network addresses frames
+  #          to this MAC and prpd's unicast filter matches it, so unicast
+  #          actually gets delivered to prp0.
+  #   explicit MAC      — e.g. "02:42:ac:1a:00:01". Use only if you need a
+  #          fixed identity across restarts; make sure it is unique.
   mac: "auto"
 
 prp:
-  prp_id: 0        # 0 = auto-derive unique ID from container hostname
-  lan_id: "A"
+  # PRP network identifier. All nodes that should form one redundancy
+  # domain share the same value.
+  #   0       (default) — auto-derive a unique ID from the container
+  #            hostname. Recommended for GNS3: every container gets a
+  #            different hostname, so nodes never collide.
+  #   1-65535 — explicit ID. Use when you need a specific value.
+  prp_id: 0
+
+  # Add the 6-byte PRP Redundancy Control Trailer (RCT) to frames sent on
+  # the LANs. Leave enabled; disable only when testing non-PRP behaviour.
   trailer_enabled: true
 
 supervision:
+  # Send PRP supervision frames (multicast 01-15-4E-00-01-00, every
+  # life_check_interval) so other nodes can detect this node's liveness.
   enabled: true
+
+  # Interval between supervision frames.
   life_check_interval: 2s
+
+  # How long a peer node is considered alive after its last supervision
+  # frame. Entries older than this are forgotten (keeps the node table
+  # bounded).
   node_forget_time: 64s
+
+  # How long MAC addresses learned behind the interlink (the SAN side)
+  # stay valid. Only matters when interlink.forward_all is false — it is
+  # the lifetime of the proxy forwarding entries.
   proxy_node_forget_time: 64s
-  node_reboot_interval: 500ms
 
 duplicate_detection:
+  # How long a (source MAC, sequence number) pair is remembered. A
+  # duplicate frame arriving within this window is discarded. Must be
+  # large enough to bridge the delay between LAN A and LAN B copies;
+  # 640 ms matches the IEC 62439-3 default.
   entry_forget_time: 640ms
+
+  # Upper bound for the duplicate-detection table. When exceeded, the
+  # oldest entry is evicted.
   max_node_table_size: 256
 
 multicast_filter:
-  first_octet: "01-00-5E"
+  # Optional filter for multicast frames forwarded from the LANs to the
+  # interlink (redbox mode, forward_all=false) or to prp0 (dan mode).
+  # The value is the destination-MAC byte prefix to allow, written as hex
+  # bytes. Anything not matching the prefix is dropped.
+  #
+  #   "01-00-5E"  — allow IPv4 multicast only (default in real RedBoxes)
+  #   "33-33"     — allow IPv6 multicast only
+  #   "01"        — allow any multicast (matches first byte 0x01)
+  #   ""          — (default) allow all multicast traffic
+  #
+  # Empty = no filtering. A malformed value is rejected at startup.
+  first_octet: ""
 
 interlink:
-  mode: san
+  # Forward every frame from the interlink onto both PRP LANs.
+  #   true  (default) — transparent bridge: all SAN traffic is duplicated
+  #   false           — only forward to MACs learned from the interlink
+  #                     (plus broadcast/multicast matching the filter).
+  #                     Requires traffic from the SAN first to learn it.
   forward_all: true
+
+  # Optional list of 802.1Q VLAN IDs to forward from the interlink to the
+  # LANs. Empty list = forward all VLANs. Example: [10, 20] forwards only
+  # VLANs 10 and 20.
   vlan_filter: []

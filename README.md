@@ -71,11 +71,15 @@ The container reads `/etc/prp/config.yaml` by default. Override via:
 # Mount custom config
 docker run -v /path/to/config.yaml:/etc/prp/config.yaml ...
 
-# Or use environment variables
-docker run -e PRP_ROLE=dan -e PRP_PRP_ID=2 ...
+# Or use environment variables (per-node in GNS3)
+docker run -e PRP_ROLE=dan -e PRP_PRP_ID=2 -e PRP_LAN_A_IP=10.0.0.10/24 ...
 ```
 
 ### Configuration Reference
+
+The full commented default config lives in `config.yaml` — every option is
+documented inline. Environment variables: `PRP_ROLE`, `PRP_PRP_ID`,
+`PRP_LAN_A_IP`, `PRP_LAN_B_IP`, `PRP_INTERLINK_IP`, `DEBUG_FRAMES`.
 
 ```yaml
 node:
@@ -86,14 +90,17 @@ interfaces:
   lan_a: eth0              # PRP LAN A
   lan_b: eth1              # PRP LAN B
   interlink: eth2          # SAN / management interface
+  ipv4:                    # Optional static IPs (CIDR), applied at startup
+    lan_a: ""
+    lan_b: ""
+    interlink: ""
 
 virtual_iface:
   name: prp0               # TAP interface for DAN mode
-  mac: "auto"              # Auto-derive or explicit MAC
+  mac: "auto"              # Auto (inherits eth0 MAC) or explicit MAC
 
 prp:
-  prp_id: 1                # PRP network ID (1-6)
-  lan_id: "A"              # LAN assignment (A or B)
+  prp_id: 0                # 0 = auto-derive unique ID from container hostname
   trailer_enabled: true
 
 supervision:
@@ -107,10 +114,9 @@ duplicate_detection:
   max_node_table_size: 256
 
 multicast_filter:
-  first_octet: "01-00-5E"  # Multicast filter pattern
+  first_octet: ""          # e.g. "01-00-5E" to allow IPv4 multicast only
 
 interlink:
-  mode: san                # san | hsr | prp
   forward_all: true
   vlan_filter: []          # Empty = pass all VLANs
 ```
@@ -128,17 +134,29 @@ make build
 ### Run standalone
 
 ```bash
-docker run --rm --privileged --network=host \
+# Create a dedicated bridge network first (recommended)
+make network
+
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   -v $(pwd)/config.yaml:/etc/prp/config.yaml \
   ghcr.io/grymme/prp-sim:latest
 ```
 
+> **Why not `--network=host`?** With host networking the container binds
+> its raw sockets to the *host's* real `eth0/eth1/eth2` and raises their
+> MTU to 1506 — if those names match your machine's interfaces, the
+> simulator will disrupt host networking. Always use a dedicated bridge
+> network and connect eth0/eth1/eth2 via GNS3 links or docker networks.
+
 ### Run with custom role
 
 ```bash
-docker run --rm --privileged --network=host \
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   -e PRP_ROLE=dan \
   -e PRP_PRP_ID=2 \
+  -e PRP_LAN_A_IP=10.0.0.10/24 \
   ghcr.io/grymme/prp-sim:latest
 ```
 
@@ -151,6 +169,13 @@ The `.gns3a` file (`gns3/westermo-prp.gns3a`) defines the GNS3 template:
 - **3 adapters**: eth0 (LAN A), eth1 (LAN B), eth2 (Interlink)
 - **Console**: Telnet (access via GNS3 console or `docker exec`)
 - **Image**: Auto-pulled from `ghcr.io/grymme/prp-sim:latest`
+- **Default env**: `PRP_ROLE=redbox` (see [docs/gns3-setup.md](docs/gns3-setup.md))
+
+> **Privileged mode**: prpd needs raw sockets (`CAP_NET_RAW`), `/dev/net/tun`
+> and interface ioctls. After importing the appliance, open the template
+> settings (Edit → Preferences → Docker → Westermo PRP Node) and tick
+> **Privileged mode** — see [docs/gns3-setup.md](docs/gns3-setup.md) for
+the exact steps.
 
 ### Example Topology
 

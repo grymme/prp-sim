@@ -16,11 +16,16 @@ PRP requires raw socket access. The container must run with `--privileged`.
 
 **Solution**:
 ```bash
-# Test manually with privileged mode
-docker run --rm --privileged --network=host \
+# Test manually with privileged mode (dedicated bridge network, NOT --network=host)
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   -v $(pwd)/config.yaml:/etc/prp/config.yaml \
   ghcr.io/grymme/prp-sim:latest
 ```
+
+> **Never use `--network=host`** when testing on a workstation: the
+> container binds raw sockets to the host's own `eth0/eth1/eth2` and
+> raises their MTU, which disrupts host networking.
 
 #### Interface Doesn't Exist
 The config references an interface that doesn't exist on the host.
@@ -39,10 +44,13 @@ Invalid YAML syntax or missing required fields.
 
 **Solution**:
 ```bash
-# Test config loading
+# Test config loading (no --config flag; use PRP_CONFIG_PATH)
 docker run --rm -v $(pwd)/config.yaml:/etc/prp/config.yaml \
   ghcr.io/grymme/prp-sim:latest \
-  prpd --config=/etc/prp/config.yaml 2>&1
+  prpd 2>&1
+
+# Or point the binary at a custom path
+PRP_CONFIG_PATH=/etc/prp/config.yaml prpd
 
 # Check for YAML errors
 python3 -c "import yaml; yaml.safe_load(open('config.yaml'))"
@@ -116,15 +124,10 @@ duplicate_detection:
   max_node_table_size: 512  # Increase if needed
 ```
 
-#### Node Reboot Detection
-Node rebooted, sequence numbers reset, old entries conflict.
-
-**Solution**:
-```yaml
-# Adjust node_reboot_interval
-supervision:
-  node_reboot_interval: 1s  # Default: 500ms
-```
+#### Node Restarted
+A container restart resets the sequence counters, so old duplicate-table
+entries may briefly conflict with fresh frames. prpd re-creates the table
+at startup, so this clears itself; no configuration needed.
 
 ### 4. Supervision Frame Problems
 
@@ -181,11 +184,7 @@ Debug mode enabled in production.
 **Solution**:
 ```bash
 # Disable debug logging
-docker run -e DEBUG_FRAMES=0 ...
-
-# Or in config.yaml (if implemented)
-debug:
-  frames: false
+DEBUG_FRAMES=0
 ```
 
 #### Node Table Too Large
@@ -254,13 +253,13 @@ sudo usermod -aG docker $USER
 ### Enable Debug Logging
 
 ```bash
-docker run --rm --privileged --network=host \
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   -e DEBUG_FRAMES=1 \
   ghcr.io/grymme/prp-sim:latest
 ```
 
-This enables frame-level logging to stdout (structured JSON is not
-implemented; logs are plain text).
+This enables frame-level logging to stdout (logs are plain text).
 
 ### Debug Logging Example
 
@@ -269,37 +268,26 @@ prp: duplicated frame (seq 42) to both LANs
 prp: duplicate frame from aa:bb:cc:dd:ee:ff seq=42 on lan_b, discarding
 prp: supervision frame (seq 100) sent on both LANs
 ```
-  "node_table": {
-    "entries": 5,
-    "nodes": [
-      {"mac": "aa:bb:cc:dd:ee:ff", "lan": "A", "last_seen": "2s ago"}
-    ]
-  },
-  "sequence": {
-    "sent": 1234,
-    "received": 1230,
-    "dropped": 4
-  }
-}
-```
 
 ### Manual Testing
 
 Test individual components:
 
 ```bash
-# Test config loading
+# Test config loading (no --config flag; use PRP_CONFIG_PATH)
 docker run --rm -v $(pwd)/config.yaml:/etc/prp/config.yaml \
   ghcr.io/grymme/prp-sim:latest \
-  prpd --config=/etc/prp/config.yaml 2>&1 | head -20
+  prpd 2>&1 | head -20
 
-# Test raw socket binding
-docker run --rm --privileged --network=host \
+# Test raw socket binding (dedicated bridge network)
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   ghcr.io/grymme/prp-sim:latest \
   ip link show
 
 # Test TAP interface
-docker run --rm --privileged --network=host \
+docker run --rm --privileged \
+  --network prp-sim-bridge \
   ghcr.io/grymme/prp-sim:latest \
   ip tuntap add dev prp0 mode tap && ip link show prp0
 ```
@@ -388,11 +376,8 @@ sudo lsof -i eth0
 ### Reduce CPU Usage
 
 ```yaml
-# Disable debug logging
-debug:
-  frames: false
-
-# Increase supervision interval (if acceptable)
+# Disable debug logging (only the DEBUG_FRAMES env var controls frame logs)
+# supervision frames every 5s instead of 2s
 supervision:
   life_check_interval: 5s  # Default: 2s
 ```
@@ -413,9 +398,9 @@ duplicate_detection:
 interlink:
   vlan_filter: []
 
-# Forward all multicast (if needed)
+# Allow all multicast (if needed)
 multicast_filter:
-  first_octet: "00"
+  first_octet: ""
 ```
 
 ## Getting Help
