@@ -34,17 +34,24 @@ func main() {
 
 	// Build PRP configuration
 	prpCfg := &prp.Config{
-		NodeName:           cfg.Node.Name,
-		Role:               cfg.Node.Role,
-		LanAInterface:      cfg.Interfaces.LanA,
-		LanBInterface:      cfg.Interfaces.LanB,
-		InterlinkInterface: cfg.Interfaces.Interlink,
-		TapName:            tapName,
-		TapMAC:             cfg.VirtualIface.MAC,
-		PRPID:              cfg.PRP.PRPID,
-		TrailerEnabled:     cfg.PRP.TrailerEnabled,
-		Debug:              os.Getenv("DEBUG_FRAMES") == "1",
+		NodeName:            cfg.Node.Name,
+		Role:                cfg.Node.Role,
+		LanAInterface:       cfg.Interfaces.LanA,
+		LanBInterface:       cfg.Interfaces.LanB,
+		InterlinkInterface:  cfg.Interfaces.Interlink,
+		TapName:             tapName,
+		TapMAC:              cfg.VirtualIface.MAC,
+		PRPID:               cfg.PRP.PRPID,
+		TrailerEnabled:      cfg.PRP.TrailerEnabled,
+		Debug:               os.Getenv("DEBUG_FRAMES") == "1",
+		ForwardAll:          cfg.Interlink.ForwardAll,
+		VLANFilter:          cfg.Interlink.VLANFilter,
+		MulticastFirstOctet: cfg.MulticastFilter.FirstOctet,
 	}
+	if d, err := time.ParseDuration(cfg.DuplicateDetection.EntryForgetTime); err == nil && d > 0 {
+		prpCfg.EntryForgetMs = int(d / time.Millisecond)
+	}
+	prpCfg.MaxNodeTableSize = cfg.DuplicateDetection.MaxNodeTableSize
 
 	// Create and start the PRP node
 	node := prp.NewNode(prpCfg)

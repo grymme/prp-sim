@@ -1,9 +1,11 @@
 package prp
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,21 +15,35 @@ import (
 	"prp-gns3/internal/supervision"
 )
 
+// containsInt reports whether v is present in xs.
+func containsInt(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // Node represents a PRP network node.
 type Node struct {
-	Config          *Config
-	LanA            iface.PacketPort
-	LanB            iface.PacketPort
-	Interlink       iface.PacketPort
-	Tap             iface.PacketPort
-	mac             []byte
-	supSeq          uint16
-	seqCounters     map[string]uint16
-	frameBuffer     chan frameEvent
-	stopChan        chan struct{}
-	stopLock        sync.Mutex
-	cleanupTimer    *time.Timer
-	supervisionSeen map[string]time.Time
+	Config           *Config
+	LanA             iface.PacketPort
+	LanB             iface.PacketPort
+	Interlink        iface.PacketPort
+	Tap              iface.PacketPort
+	mac              []byte
+	supSeq           uint16
+	seqCounters      map[string]uint16
+	frameBuffer      chan frameEvent
+	stopChan         chan struct{}
+	stopLock         sync.Mutex
+	cleanupTimer     *time.Timer
+	supervisionSeen  map[string]time.Time
+	dupTable         *nodetable.Table
+	proxyTable       map[string]time.Time
+	proxyTableMu     sync.Mutex
+	proxyTableForget time.Duration
 }
 
 // StopChan returns the channel that is closed when the node is stopped.
@@ -47,6 +63,22 @@ type Config struct {
 	PRPID              int
 	TrailerEnabled     bool
 	Debug              bool
+
+	// ForwardAll: when true (default), the RedBox forwards all LAN frames
+	// to the interlink; when false, only frames destined to SANs learned
+	// behind the interlink (plus multicast/broadcast).
+	ForwardAll bool
+	// VLANFilter: if non-empty, only these VLAN IDs are forwarded from
+	// the interlink to the LANs.
+	VLANFilter []int
+	// MulticastFirstOctet: when non-empty, multicast frames whose
+	// destination first octet does not match are not forwarded from the
+	// LANs to the interlink.
+	MulticastFirstOctet string
+	// EntryForgetMs: duplicate-detection entry lifetime.
+	EntryForgetMs int
+	// MaxNodeTableSize: duplicate-detection table cap.
+	MaxNodeTableSize int
 }
 
 type frameEvent struct {
@@ -60,11 +92,22 @@ func NewNode(cfg *Config) *Node {
 	if cfg == nil {
 		cfg = &Config{}
 	}
+	maxSize := cfg.MaxNodeTableSize
+	if maxSize <= 0 {
+		maxSize = 256
+	}
+	forgetMs := cfg.EntryForgetMs
+	if forgetMs <= 0 {
+		forgetMs = 640
+	}
 	return &Node{
-		Config:      cfg,
-		seqCounters: make(map[string]uint16),
-		frameBuffer: make(chan frameEvent, 10000),
-		stopChan:    make(chan struct{}),
+		Config:           cfg,
+		seqCounters:      make(map[string]uint16),
+		frameBuffer:      make(chan frameEvent, 10000),
+		stopChan:         make(chan struct{}),
+		dupTable:         nodetable.NewTable(maxSize),
+		proxyTable:       make(map[string]time.Time),
+		proxyTableForget: time.Duration(forgetMs) * time.Millisecond,
 	}
 }
 
@@ -335,8 +378,17 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	// Get source MAC for duplicate detection
 	srcMAC := engine.GetSrcMAC(event.frame)
 
+	// Never forward frames sourced from this node itself. PACKET_IGNORE_OUTGOING
+	// already prevents self-reception, but this guards against bridged LANs.
+	if bytes.Equal(n.mac, srcMACBytes(event.frame)) && n.mac != nil {
+		if n.Config.Debug {
+			log.Printf("prp: frame from own MAC on %s, discarding", event.iface)
+		}
+		return
+	}
+
 	// Check for duplicate
-	if nodetable.Find(srcMAC, seq) {
+	if n.dupTable.Find(srcMAC, seq) {
 		if n.Config.Debug {
 			log.Printf("prp: duplicate frame from %s seq=%d on %s, discarding", srcMAC, seq, event.iface)
 		}
@@ -344,11 +396,18 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	}
 
 	// Accept the frame - add to node table
-	nodetable.InsertWithExpiry(srcMAC, seq, lanID, 640)
+	n.dupTable.InsertWithExpiry(srcMAC, seq, lanID, n.entryForgetMs())
 
 	// Forward based on role
 	if n.Config.Role == "redbox" && n.Interlink != nil {
-		// RedBox: forward to interlink
+		// RedBox: forward to interlink, subject to learned-proxy and
+		// multicast filtering.
+		if !n.shouldForwardToInterlink(payload) {
+			if n.Config.Debug {
+				log.Printf("prp: frame from %s not forwarded to interlink (filtered)", srcMAC)
+			}
+			return
+		}
 		_, err := n.Interlink.Write(payload)
 		if err != nil {
 			log.Printf("prp: failed to write to interlink: %v", err)
@@ -357,12 +416,82 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 			log.Printf("prp: forwarded frame (%d bytes) to interlink", len(payload))
 		}
 	} else if n.Tap != nil {
-		// DAN: forward to TAP interface
+		// DAN: forward to TAP interface, subject to destination filter.
+		if !n.shouldForwardToTap(payload) {
+			if n.Config.Debug {
+				log.Printf("prp: frame from %s not forwarded to TAP (filtered)", srcMAC)
+			}
+			return
+		}
 		_, err := n.Tap.Write(payload)
 		if err != nil {
 			log.Printf("prp: failed to write to TAP: %v", err)
 		}
 	}
+}
+
+// entryForgetMs returns the configured duplicate-detection entry lifetime.
+func (n *Node) entryForgetMs() int {
+	if n.Config.EntryForgetMs > 0 {
+		return n.Config.EntryForgetMs
+	}
+	return 640
+}
+
+// srcMACBytes returns the raw 6-byte source MAC of an Ethernet frame.
+func srcMACBytes(frame []byte) []byte {
+	if len(frame) < 12 {
+		return nil
+	}
+	return frame[6:12]
+}
+
+// shouldForwardToInterlink decides whether a LAN frame is forwarded to the
+// SAN. With ForwardAll (default) everything passes. Otherwise only frames
+// destined to SANs learned behind the interlink, or multicast/broadcast
+// frames matching the configured multicast filter.
+func (n *Node) shouldForwardToInterlink(frame []byte) bool {
+	if n.Config.ForwardAll {
+		return true
+	}
+	if engine.IsMulticastMAC(frame) {
+		return n.multicastAllowed(frame)
+	}
+	// Unicast: forward only if the destination was learned behind the
+	// interlink (proxy table).
+	dst := engine.GetDstMAC(frame)
+	n.proxyTableMu.Lock()
+	seen, ok := n.proxyTable[dst]
+	n.proxyTableMu.Unlock()
+	if ok && time.Since(seen) <= n.proxyTableForget {
+		return true
+	}
+	return false
+}
+
+// shouldForwardToTap decides whether a LAN frame is delivered to the TAP
+// interface in DAN mode: only unicast to our MAC, broadcast, or allowed
+// multicast.
+func (n *Node) shouldForwardToTap(frame []byte) bool {
+	if engine.IsMulticastMAC(frame) {
+		return n.multicastAllowed(frame)
+	}
+	// Unicast: deliver only if addressed to this node's MAC.
+	return len(frame) >= 6 && len(n.mac) == 6 && bytes.Equal(n.mac, frame[0:6])
+}
+
+// multicastAllowed applies the configured multicast first-octet filter.
+func (n *Node) multicastAllowed(frame []byte) bool {
+	filter := n.Config.MulticastFirstOctet
+	if filter == "" {
+		return true
+	}
+	// Expects a hex byte like "01" (from "01-00-5E" style config).
+	first, err := strconv.ParseUint(filter, 16, 8)
+	if err != nil {
+		return true
+	}
+	return len(frame) > 0 && frame[0] == byte(first)
 }
 
 // handleInterlinkFrame processes frames arriving from the interlink.
@@ -372,6 +501,25 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 func (n *Node) handleInterlinkFrame(event frameEvent) {
 	if n.Config.Debug {
 		log.Printf("prp: interlink frame (%d bytes)", event.frameSz)
+	}
+
+	// VLAN filter: when configured, only the listed VLAN IDs pass.
+	if len(n.Config.VLANFilter) > 0 {
+		if vlanID, tagged := engine.GetVLANID(event.frame); !tagged || !containsInt(n.Config.VLANFilter, vlanID) {
+			if n.Config.Debug {
+				log.Printf("prp: interlink frame VLAN %d filtered out", vlanID)
+			}
+			return
+		}
+	}
+
+	// Learn the SAN source MAC so the RedBox can later decide which
+	// LAN frames to forward back to the interlink.
+	if len(event.frame) >= 12 {
+		src := engine.GetSrcMAC(event.frame)
+		n.proxyTableMu.Lock()
+		n.proxyTable[src] = time.Now()
+		n.proxyTableMu.Unlock()
 	}
 
 	srcMAC := engine.GetSrcMAC(event.frame)

@@ -69,6 +69,23 @@ func IsVLANFrame(frame []byte) bool {
 	return et == 0x8100 || et == 0x88a8
 }
 
+// GetVLANID returns the 802.1Q VLAN ID of the frame and whether a tag is
+// present. Only a single (outer) tag is inspected.
+func GetVLANID(frame []byte) (int, bool) {
+	if !IsVLANFrame(frame) {
+		return 0, false
+	}
+	// TCI = bytes 14-15; VLAN ID = low 12 bits.
+	tci := binary.BigEndian.Uint16(frame[14:16])
+	return int(tci & 0x0FFF), true
+}
+
+// IsMulticastMAC reports whether the destination MAC has the multicast bit
+// set (first octet odd).
+func IsMulticastMAC(frame []byte) bool {
+	return len(frame) > 0 && frame[0]&0x01 == 1
+}
+
 // EncodeRCT pads the frame to the minimum Ethernet size, appends the 6-byte
 // PRP RCT trailer and returns the result. seq must be the sequence number
 // assigned to this frame (the same for both LAN copies); lanID must be 0

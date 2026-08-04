@@ -39,22 +39,45 @@ func Insert(srcMAC string, seq, lanID int) {
 }
 
 func InsertWithExpiry(srcMAC string, seq, lanID int, expiryMs int) {
-	table.mu.Lock()
-	defer table.mu.Unlock()
-	table.entries[key(srcMAC, seq)] = Entry{
+	table.InsertWithExpiry(srcMAC, seq, lanID, expiryMs)
+}
+
+// InsertWithExpiry stores a (srcMAC, seq) entry. The entry expires after
+// expiryMs. When the table is at maxSize, the oldest entry is evicted.
+func (t *Table) InsertWithExpiry(srcMAC string, seq, lanID int, expiryMs int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.entries[key(srcMAC, seq)] = Entry{
 		SrcMAC:   srcMAC,
 		SeqNo:    seq,
 		LANID:    lanID,
 		LastSeen: time.Now(),
 		ExpiryMs: expiryMs,
 	}
+	if t.maxSize > 0 && len(t.entries) > t.maxSize {
+		// Evict the oldest entry.
+		var oldestKey string
+		var oldest time.Time
+		for k, e := range t.entries {
+			if oldestKey == "" || e.LastSeen.Before(oldest) {
+				oldestKey = k
+				oldest = e.LastSeen
+			}
+		}
+		delete(t.entries, oldestKey)
+	}
 }
 
 // Find checks if a frame has been seen (not expired).
 func Find(srcMAC string, seq int) bool {
-	table.mu.RLock()
-	defer table.mu.RUnlock()
-	entry, ok := table.entries[key(srcMAC, seq)]
+	return table.Find(srcMAC, seq)
+}
+
+// Find checks if a frame has been seen (not expired).
+func (t *Table) Find(srcMAC string, seq int) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	entry, ok := t.entries[key(srcMAC, seq)]
 	if !ok {
 		return false
 	}
@@ -67,13 +90,18 @@ func Find(srcMAC string, seq int) bool {
 
 // Cleanup removes stale entries. Returns count of removed entries.
 func Cleanup() int {
+	return table.Cleanup()
+}
+
+// Cleanup removes stale entries. Returns count of removed entries.
+func (t *Table) Cleanup() int {
 	now := time.Now()
 	removed := 0
-	table.mu.Lock()
-	defer table.mu.Unlock()
-	for k, v := range table.entries {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, v := range t.entries {
 		if now.Sub(v.LastSeen) > time.Duration(v.ExpiryMs)*time.Millisecond {
-			delete(table.entries, k)
+			delete(t.entries, k)
 			removed++
 		}
 	}
@@ -82,7 +110,12 @@ func Cleanup() int {
 
 // Size returns the current number of entries in the table.
 func Size() int {
-	table.mu.RLock()
-	defer table.mu.RUnlock()
-	return len(table.entries)
+	return table.Size()
+}
+
+// Size returns the current number of entries in the table.
+func (t *Table) Size() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.entries)
 }
