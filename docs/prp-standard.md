@@ -48,22 +48,22 @@ The connection between a RedBox and a SAN. Operates at Layer 2, transparent to t
 
 ### RCT (Redundancy Control Trailer)
 
-The 4-byte RCT is appended to every PRP frame:
+The 6-byte RCT is appended to every PRP frame:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ RCT Structure (4 bytes)                                         │
+│ RCT Structure (6 bytes)                                         │
 ├─────────────────────┬─────────┬─────────────┬───────────────────┤
-│ Sequence Number     │ LAN ID  │ LSDU Size   │ Suffix            │
+│ Sequence Number     │ LAN ID  │ LSDU Size   │ Suffix = 0x88FB   │
 │ (16 bits)           │ (4 bits)│ (12 bits)   │ (16 bits)         │
 └─────────────────────┴─────────┴─────────────┴───────────────────┘
 ```
 
 **Fields**:
-- **Sequence Number**: 16-bit counter, incremented per source MAC. Used for duplicate detection.
-- **LAN ID**: Identifies which LAN the frame was sent on (A=1, B=2).
-- **LSDU Size**: Length of the payload (including RCT). Used to locate the trailer.
-- **Suffix**: Identifies the RCT. Standard: `0x8100`. Some implementations use `0xFACE`.
+- **Sequence Number**: 16-bit counter, incremented per source MAC. Used for duplicate detection. The same sequence number is used on both LAN copies.
+- **LAN ID**: Identifies which LAN the frame was sent on (A=0, B=1).
+- **LSDU Size**: Length of the frame including the RCT, minus the Ethernet header. Used to locate and validate the trailer.
+- **Suffix**: Identifies the RCT. Always `0x88FB` (the PRP EtherType).
 
 ### Frame Transmission
 
@@ -101,18 +101,17 @@ Supervision frames (Ethertype `0x88fb`) are used for:
 │ Supervision Frame                                               │
 ├───────────┬───────────┬───────────┬─────────────────────────────┤
 │ Dst MAC   │ Src MAC   │ EtherType │ Payload                     │
-│ (6 bytes) │ (6 bytes) │ 0x88fb    │ (variable)                  │
+│ 01-15-4E- │ (6 bytes) │ 0x88fb    │ (variable)                  │
+│ 00-01-00  │           │           │                             │
 └───────────┴───────────┴───────────┴─────────────────────────────┘
 ```
 
 ### Payload Contents
 
-- **PRP-ID**: Network identifier (1-6)
-- **LAN-ID**: Which LAN this frame was sent on
-- **Node State**: Active, Inactive, etc.
-- **Sequence Number**: Monotonic counter for supervision
-- **Node Count**: Number of nodes behind this RedBox
-- **Node List**: MAC addresses of nodes behind the RedBox (proxy nodes)
+- **Path/Seq**: 2-byte path (0 for PRP) + 2-byte sequence number
+- **TLV**: Type + length; life-check (type 20/21) or RedBox MAC (type 30)
+- **MacAddressA**: MAC address of the sending node
+- **RCT trailer**: appended per LAN with the correct LAN ID, like any PRP frame
 
 ### Timing
 

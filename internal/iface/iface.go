@@ -27,8 +27,7 @@ type RawSocket struct {
 }
 
 const (
-	ethPAll  = 0x0003
-	ethPTxRx = 0x884c // PRP ethertype for sending
+	ethPAll = 0x0003
 )
 
 // htons converts 16-bit value from host to network byte order.
@@ -36,14 +35,9 @@ func htons(v uint16) uint16 {
 	return (v << 8) & 0xFF00 | v>>8
 }
 
-// sockaddrLinkLayer mirrors the kernel struct for AF_PACKET binding.
-type sockaddrLinkLayer struct {
-	Family  uint16
-	_       uint16 // pad
-	Ifindex int32
-	Hat     uint16
-	_       [20]byte
-}
+// sockaddrLinkLayer wraps the kernel's struct sockaddr_ll (20 bytes) for
+// AF_PACKET bind/sendto. unix.RawSockaddrLinklayer has the exact layout.
+type sockaddrLinkLayer = unix.RawSockaddrLinklayer
 
 // CreateRawSocket creates a raw socket bound to a specific interface.
 func CreateRawSocket(iface string) (*RawSocket, error) {

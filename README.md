@@ -4,12 +4,12 @@ A userspace implementation of the **Parallel Redundancy Protocol (PRP, IEC 62439
 
 ## Features
 
-- Full IEC 62439-3 compliance (RCT trailer, duplicate detection, supervision frames)
+- Full IEC 62439-3 compliance (6-byte RCT trailer, duplicate detection, supervision frames)
 - **Dual mode**: RedBox (SAN bridging) or DAN (application node)
 - Configurable via YAML file
 - GNS3 integration via `.gns3a` appliance
 - Lightweight Docker image (~13MB)
-- Structured logging and health endpoint for debugging
+- Structured logging and in-container debugging via telnet console
 
 ## Quick Start
 
@@ -94,7 +94,6 @@ virtual_iface:
 prp:
   prp_id: 1                # PRP network ID (1-6)
   lan_id: "A"              # LAN assignment (A or B)
-  suffix: "0x8100"         # RCT suffix (0x8100 or 0xFACE)
   trailer_enabled: true
 
 supervision:
@@ -233,33 +232,12 @@ docker-compose up
 
 ## Debugging
 
-### Health Status
-
-Access the HTTP status endpoint (if enabled in config):
-
-```bash
-curl http://localhost:8080/status
-```
-
-Returns JSON with interface states, node table, sequence counters.
-
-### Packet Capture
-
-Enable pcap output for Wireshark analysis:
-
-```bash
-docker run --privileged --network=host \
-  -v /tmp/prp.pcap:/var/log/prp/capture.pcap \
-  ghcr.io/grymme/prp-sim:latest \
-  prpd --pcap=/var/log/prp/capture.pcap
-```
-
 ### Debug Logging
 
 Enable frame-level logging:
 
 ```bash
-docker run -e DEBUG_FRAMES=1 -e LOG_FORMAT=json ...
+docker run -e DEBUG_FRAMES=1 ...
 ```
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues.

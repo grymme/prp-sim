@@ -34,7 +34,6 @@ type Node struct {
 	Tap              iface.PacketPort
 	mac              []byte
 	supSeq           uint16
-	seqCounters      map[string]uint16
 	frameBuffer      chan frameEvent
 	stopChan         chan struct{}
 	stopLock         sync.Mutex
@@ -102,7 +101,6 @@ func NewNode(cfg *Config) *Node {
 	}
 	return &Node{
 		Config:           cfg,
-		seqCounters:      make(map[string]uint16),
 		frameBuffer:      make(chan frameEvent, 10000),
 		stopChan:         make(chan struct{}),
 		dupTable:         nodetable.NewTable(maxSize),
@@ -255,7 +253,7 @@ func (n *Node) readLoop(rs iface.PacketPort, ifaceName string) {
 
 // tapReadLoop reads frames from the TAP interface.
 func (n *Node) tapReadLoop() {
-	buf := make([]byte, n.TapMTU()+512)
+	buf := make([]byte, 2048+512)
 
 	for {
 		select {
@@ -284,13 +282,6 @@ func (n *Node) tapReadLoop() {
 			log.Printf("prp: frame buffer full, dropping TAP frame")
 		}
 	}
-}
-
-func (n *Node) TapMTU() int {
-	if n.Tap != nil {
-		return 1500
-	}
-	return 1500
 }
 
 // processFrames is the main event loop for frame processing.

@@ -22,7 +22,6 @@ Override individual config values via environment variables:
 | `PRP_PRP_ID` | `prp.prp_id` | `2` |
 | `PRP_LAN_ID` | `prp.lan_id` | `B` |
 | `DEBUG_FRAMES` | (debug logging) | `1` |
-| `LOG_FORMAT` | (log output format) | `json` |
 
 ## Configuration File Structure
 
@@ -43,7 +42,6 @@ virtual_iface:
 prp:
   prp_id: integer      # Required: PRP network ID (1-6)
   lan_id: "string"     # Required: "A" or "B"
-  suffix: "string"     # Optional: RCT suffix (default: "0x8100")
   trailer_enabled: boolean  # Optional: Enable RCT (default: true)
 
 supervision:
@@ -96,7 +94,6 @@ interlink:
 |-----------|------|----------|---------|-------------|
 | `prp_id` | integer | Yes | — | PRP network identifier (1-6). Must match across all nodes in the same PRP network. |
 | `lan_id` | string | Yes | — | Which LAN this node connects to. `A` for LAN A, `B` for LAN B. Used in HSR-PRP coupling. |
-| `suffix` | string | No | `0x8100` | RCT suffix value. Standard: `0x8100`. Some implementations use `0xFACE`. Must match across network. |
 | `trailer_enabled` | boolean | No | `true` | Enable/disable RCT trailer insertion. Disable only for testing. |
 
 ### supervision
@@ -167,7 +164,6 @@ virtual_iface:
 prp:
   prp_id: 1
   lan_id: "A"
-  suffix: "0x8100"
   trailer_enabled: true
 
 supervision:
@@ -206,7 +202,6 @@ interlink:
 - `role` must be `redbox` or `dan`
 - `prp_id` must be 1-6 (0 reserved for HSR-SAN, 7 reserved)
 - `lan_id` must be `A` or `B`
-- `suffix` must be `0x8100` or `0xFACE`
 - Interfaces must exist on the system (validated at startup)
 - If `role=redbox`, `interlink` interface is required
 

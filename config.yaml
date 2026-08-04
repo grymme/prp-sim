@@ -14,7 +14,6 @@ virtual_iface:
 prp:
   prp_id: 0        # 0 = auto-derive unique ID from container hostname
   lan_id: "A"
-  suffix: "0x8100"
   trailer_enabled: true
 
 supervision:

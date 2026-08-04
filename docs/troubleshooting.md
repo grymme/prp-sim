@@ -256,58 +256,19 @@ sudo usermod -aG docker $USER
 ```bash
 docker run --rm --privileged --network=host \
   -e DEBUG_FRAMES=1 \
-  -e LOG_FORMAT=json \
   ghcr.io/grymme/prp-sim:latest
 ```
 
-**Output**:
-```json
-{"event":"rx_frame","src":"aa:bb:cc:dd:ee:ff","lan":"A","seq":42,"size":64}
-{"event":"tx_frame","dst":"aa:bb:cc:dd:ee:ff","lan":"B","seq":43,"size":64}
-{"event":"supervision","lan":"A","seq":100,"proxy_nodes":2}
+This enables frame-level logging to stdout (structured JSON is not
+implemented; logs are plain text).
+
+### Debug Logging Example
+
 ```
-
-### Packet Capture
-
-Enable pcap output for Wireshark analysis:
-
-```bash
-# Create capture directory
-mkdir -p /tmp/prp
-
-# Run with pcap enabled
-docker run --rm --privileged --network=host \
-  -v /tmp/prp:/var/log/prp \
-  ghcr.io/grymme/prp-sim:latest \
-  prpd --pcap=/var/log/prp/capture.pcap
-
-# Analyze in Wireshark
-wireshark /tmp/prp/capture.pcap
+prp: duplicated frame (seq 42) to both LANs
+prp: duplicate frame from aa:bb:cc:dd:ee:ff seq=42 on lan_b, discarding
+prp: supervision frame (seq 100) sent on both LANs
 ```
-
-### Check Node Table
-
-Access the HTTP status endpoint:
-
-```bash
-# Enable status endpoint in config
-http:
-  enabled: true
-  port: 8080
-
-# Query status
-curl http://localhost:8080/status
-```
-
-**Response**:
-```json
-{
-  "role": "redbox",
-  "interfaces": {
-    "eth0": {"status": "up", "lan": "A"},
-    "eth1": {"status": "up", "lan": "B"},
-    "eth2": {"status": "up", "role": "interlink"}
-  },
   "node_table": {
     "entries": 5,
     "nodes": [

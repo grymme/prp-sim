@@ -19,7 +19,7 @@ The main process that:
 ### Engine (`internal/engine/`)
 
 Handles PRP-specific frame processing:
-- **RCT Encoding**: Appends 4-byte RCT trailer to outgoing frames
+- **RCT Encoding**: Appends 6-byte RCT trailer (seq + LAN ID/LSDU size + 0x88FB suffix) to outgoing frames, padding short frames first
 - **RCT Decoding**: Parses and removes RCT from incoming frames
 - **Sequence Number Management**: Assigns unique sequence numbers per source MAC
 
@@ -104,23 +104,26 @@ Loads and validates YAML configuration:
 ```
 ┌───────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
 │ Dst MAC   │ Src MAC   │ EtherType │ Payload   │ RCT       │ FCS       │
-│ (6 bytes) │ (6 bytes) │ (2 bytes) │ (46-1500) │ (4 bytes) │ (4 bytes) │
+│ (6 bytes) │ (6 bytes) │ (2 bytes) │ (46-1500) │ (6 bytes) │ (4 bytes) │
 └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
                                                       │
                                          ┌────────────┴────────────┐
                                          │ SequenceNo (16 bits)    │
                                          │ LAN ID (4 bits)         │
                                          │ LSDUsize (12 bits)      │
-                                         │ Suffix (16 bits)        │
+                                         │ Suffix = 0x88FB (16b)   │
                                          └─────────────────────────┘
 ```
+
+Note: the suffix is the constant `0x88FB` (the PRP EtherType) — this is how a receiver identifies the RCT. Frames are padded to the minimum Ethernet size (60 bytes) before the RCT is appended so the trailer always sits at the end of the wire frame.
 
 ### Supervision Frame
 
 ```
 ┌───────────┬───────────┬───────────┬───────────────────────────────┐
 │ Dst MAC   │ Src MAC   │ EtherType │ Payload                       │
-│ 01-15-... │ PRP MAC   │ 0x88fb    │ PRP-ID, LAN-ID, Node State    │
+│ 01-15-4E- │ PRP MAC   │ 0x88fb    │ path+seq, TLV, MacAddressA    │
+│ 00-01-00  │           │           │ (+ RCT trailer per LAN)       │
 └───────────┴───────────┴───────────┴───────────────────────────────┘
 ```
 
