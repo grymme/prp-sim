@@ -100,10 +100,10 @@ func TestEncodeDecodeRCTSequenceNumber(t *testing.T) {
 	orig := make([]byte, 60)
 	mac := "test-mac-1"
 
-	ResetSequence(mac)
+	mgr := NewSequenceManager()
 
 	// Both LAN copies of the same frame MUST carry the same seq.
-	seq := NextSequence(mac)
+	seq := mgr.Next(mac)
 	encA := EncodeRCT(orig, seq, 0)
 	encB := EncodeRCT(orig, seq, 1)
 
@@ -117,7 +117,7 @@ func TestEncodeDecodeRCTSequenceNumber(t *testing.T) {
 	}
 
 	// Next frame gets seq=1.
-	seq2 := NextSequence(mac)
+	seq2 := mgr.Next(mac)
 	if seq2 != 1 {
 		t.Errorf("expected second seq=1, got %d", seq2)
 	}

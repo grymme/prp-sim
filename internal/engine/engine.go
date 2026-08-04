@@ -31,33 +31,34 @@ const (
 	vlanEthMinLen = 64
 )
 
-// SequenceManager tracks per-source-MAC sequence numbers.
+// SequenceManager tracks per-source-MAC sequence numbers. Each PRP node
+// owns its own instance so multiple nodes (and tests) never share state.
 type SequenceManager struct {
 	mu   sync.Mutex
 	seqs map[string]uint16
 }
 
-var seqMgr = &SequenceManager{
-	seqs: make(map[string]uint16),
+func NewSequenceManager() *SequenceManager {
+	return &SequenceManager{seqs: make(map[string]uint16)}
 }
 
-// NextSequence returns the next sequence number for a given source MAC and
+// Next returns the next sequence number for a given source MAC and
 // advances the counter. Callers must use the returned value for BOTH LAN
 // copies of a frame — PRP requires the same sequence number on LAN A and
 // LAN B so receivers can discard the duplicate.
-func NextSequence(srcMAC string) uint16 {
-	seqMgr.mu.Lock()
-	defer seqMgr.mu.Unlock()
-	seq := seqMgr.seqs[srcMAC]
-	seqMgr.seqs[srcMAC] = seq + 1
+func (s *SequenceManager) Next(srcMAC string) uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seq := s.seqs[srcMAC]
+	s.seqs[srcMAC] = seq + 1
 	return seq
 }
 
-// ResetSequence resets the sequence counter for a MAC address.
-func ResetSequence(srcMAC string) {
-	seqMgr.mu.Lock()
-	defer seqMgr.mu.Unlock()
-	delete(seqMgr.seqs, srcMAC)
+// Reset clears the counter for a MAC address.
+func (s *SequenceManager) Reset(srcMAC string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.seqs, srcMAC)
 }
 
 // IsVLANFrame reports whether the frame carries an 802.1Q/802.1ad tag.

@@ -34,6 +34,7 @@ type Node struct {
 	Tap              iface.PacketPort
 	mac              []byte
 	supSeq           uint16
+	seqMgr           *engine.SequenceManager
 	frameBuffer      chan frameEvent
 	stopChan         chan struct{}
 	stopLock         sync.Mutex
@@ -101,6 +102,7 @@ func NewNode(cfg *Config) *Node {
 	}
 	return &Node{
 		Config:           cfg,
+		seqMgr:           engine.NewSequenceManager(),
 		frameBuffer:      make(chan frameEvent, 10000),
 		stopChan:         make(chan struct{}),
 		dupTable:         nodetable.NewTable(maxSize),
@@ -224,8 +226,8 @@ func (n *Node) Stop() {
 
 // periodicCleanup removes expired entries from the node table.
 func (n *Node) periodicCleanup() {
-	if nodetable.Cleanup() > 0 {
-		log.Printf("prp: node table cleaned up, size now %d", nodetable.Size())
+	if n.dupTable.Cleanup() > 0 {
+		log.Printf("prp: node table cleaned up, size now %d", n.dupTable.Size())
 	}
 	n.cleanupTimer.Reset(1 * time.Second)
 }
@@ -537,7 +539,7 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	}
 
 	// Allocate ONE sequence number for this frame; both copies use it.
-	seq := engine.NextSequence(srcMAC)
+	seq := n.seqMgr.Next(srcMAC)
 
 	// LAN A = 0, LAN B = 1 (IEC 62439-3 / kernel numbering).
 	lanAFrame := engine.EncodeRCT(event.frame, seq, 0)
@@ -573,7 +575,7 @@ func (n *Node) handleDANFrame(event frameEvent) {
 		return
 	}
 
-	seq := engine.NextSequence(srcMAC)
+	seq := n.seqMgr.Next(srcMAC)
 	lanAFrame := engine.EncodeRCT(event.frame, seq, 0)
 	lanBFrame := engine.EncodeRCT(event.frame, seq, 1)
 

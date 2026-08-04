@@ -21,8 +21,6 @@ type Table struct {
 	maxSize int
 }
 
-var table = NewTable(256)
-
 func NewTable(maxSize int) *Table {
 	return &Table{
 		entries: make(map[string]Entry),
@@ -32,14 +30,6 @@ func NewTable(maxSize int) *Table {
 
 func key(srcMAC string, seq int) string {
 	return fmt.Sprintf("%s|%d", srcMAC, seq)
-}
-
-func Insert(srcMAC string, seq, lanID int) {
-	InsertWithExpiry(srcMAC, seq, lanID, 640)
-}
-
-func InsertWithExpiry(srcMAC string, seq, lanID int, expiryMs int) {
-	table.InsertWithExpiry(srcMAC, seq, lanID, expiryMs)
 }
 
 // InsertWithExpiry stores a (srcMAC, seq) entry. The entry expires after
@@ -69,11 +59,6 @@ func (t *Table) InsertWithExpiry(srcMAC string, seq, lanID int, expiryMs int) {
 }
 
 // Find checks if a frame has been seen (not expired).
-func Find(srcMAC string, seq int) bool {
-	return table.Find(srcMAC, seq)
-}
-
-// Find checks if a frame has been seen (not expired).
 func (t *Table) Find(srcMAC string, seq int) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -89,11 +74,6 @@ func (t *Table) Find(srcMAC string, seq int) bool {
 }
 
 // Cleanup removes stale entries. Returns count of removed entries.
-func Cleanup() int {
-	return table.Cleanup()
-}
-
-// Cleanup removes stale entries. Returns count of removed entries.
 func (t *Table) Cleanup() int {
 	now := time.Now()
 	removed := 0
@@ -106,11 +86,6 @@ func (t *Table) Cleanup() int {
 		}
 	}
 	return removed
-}
-
-// Size returns the current number of entries in the table.
-func Size() int {
-	return table.Size()
 }
 
 // Size returns the current number of entries in the table.

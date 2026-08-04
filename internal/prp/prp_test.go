@@ -9,7 +9,6 @@ import (
 
 	"prp-gns3/internal/engine"
 	"prp-gns3/internal/iface"
-	"prp-gns3/internal/nodetable"
 )
 
 // memPort is an in-memory PacketPort for testing.
@@ -68,8 +67,7 @@ func ethFrame(src [6]byte, dst [6]byte) []byte {
 // copy and discard the second.
 func TestRedBoxDuplicateDiscard(t *testing.T) {
 	n, lanA, lanB, inter := newNode()
-	engine.ResetSequence("aa:bb:cc:dd:ee:ff")
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	dst := [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
@@ -113,7 +111,6 @@ func TestRedBoxDuplicateDiscard(t *testing.T) {
 // copies share the seq.
 func TestInterlinkFrameSameSeq(t *testing.T) {
 	n, lanA, lanB, _ := newNode()
-	engine.ResetSequence("aa:bb:cc:dd:ee:ff")
 
 	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	frame := ethFrame(src, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
@@ -141,7 +138,7 @@ func TestInterlinkFrameSameSeq(t *testing.T) {
 // versa) must be dropped — guards against bridged/looped networks.
 func TestLANIDRejection(t *testing.T) {
 	n, _, _, inter := newNode()
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	frame := ethFrame(src, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
@@ -165,7 +162,7 @@ func TestLANIDRejection(t *testing.T) {
 // never forwarded to the interlink (SAN).
 func TestSupervisionConsumed(t *testing.T) {
 	n, _, _, inter := newNode()
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	srcMAC := []byte{0x02, 0x50, 0x50, 0xaa, 0xbb, 0xcc}
 	sup := make([]byte, 60)
@@ -196,7 +193,7 @@ func TestDANModeForwarding(t *testing.T) {
 	n.LanA = lanA
 	n.LanB = lanB
 	n.Tap = tap
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	// Unique src MAC: the node table is a package-level singleton and
 	// Cleanup() only removes expired entries.
@@ -218,7 +215,7 @@ func TestProxyLearning(t *testing.T) {
 	n, _, _, inter := newNode()
 	n.Config.ForwardAll = false
 	n.Config.MaxNodeTableSize = 0 // default
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	sanMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	sanDst := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
@@ -283,7 +280,7 @@ func TestMulticastFilter(t *testing.T) {
 	n, _, _, inter := newNode()
 	n.Config.ForwardAll = false
 	n.Config.MulticastFirstOctet = "01"
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 
@@ -315,7 +312,7 @@ func TestDANUnicastFilter(t *testing.T) {
 	n.LanB = lanB
 	n.Tap = tap
 	n.SetNodeMAC([]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x99})
-	nodetable.Cleanup()
+	n.dupTable.Cleanup()
 
 	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 
