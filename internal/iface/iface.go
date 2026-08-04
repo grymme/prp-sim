@@ -9,6 +9,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// PacketPort is the interface implemented by RawSocket and TAPSocket.
+// It allows injecting in-memory ports into the PRP node for testing.
+type PacketPort interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+	Name() string
+}
+
 // RawSocket wraps a Linux raw socket (AF_PACKET) for frame capture/injection.
 type RawSocket struct {
 	name    string
@@ -76,6 +85,15 @@ func CreateRawSocket(iface string) (*RawSocket, error) {
 
 	// Increase receive buffer size
 	unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 128*1024)
+
+	// Do not receive our own transmitted frames. Without this, an AF_PACKET
+	// raw socket gets a loopback copy of every frame it sends, which would
+	// make the RedBox re-ingest its own duplicated traffic and echo it back
+	// to the interlink (packet storm).
+	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("set PACKET_IGNORE_OUTGOING: %w", err)
+	}
 
 	return &RawSocket{
 		name:    iface,
@@ -195,13 +213,13 @@ func CreateTAP(name string, mac string) (*TAPSocket, error) {
 	}
 
 	if mac != "" && mac != "auto" {
-		if err := setInterfaceMAC(actualName, mac); err != nil {
+		if err := setInterfaceMAC(file.Fd(), actualName, mac); err != nil {
 			file.Close()
 			return nil, fmt.Errorf("set MAC: %w", err)
 		}
 	}
 
-	if err := setInterfaceUp(actualName); err != nil {
+	if err := setInterfaceUp(file.Fd(), actualName); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("set interface up: %w", err)
 	}
@@ -247,12 +265,10 @@ func ensureTunModule() error {
 	return nil
 }
 
-func setInterfaceMAC(name, mac string) error {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-
+// setInterfaceMAC sets the hardware address of a network interface.
+// fd must be an open file descriptor that ioctl can be issued on (the TAP
+// fd or any socket); using the interface index here would fail with EBADF.
+func setInterfaceMAC(fd uintptr, name, mac string) error {
 	hwAddr, err := net.ParseMAC(mac)
 	if err != nil {
 		return err
@@ -268,7 +284,7 @@ func setInterfaceMAC(name, mac string) error {
 
 	_, _, errno := unix.Syscall(
 		unix.SYS_IOCTL,
-		uintptr(iface.Index),
+		fd,
 		unix.SIOCSIFHWADDR,
 		uintptr(unsafe.Pointer(&ifreq)),
 	)
@@ -279,12 +295,10 @@ func setInterfaceMAC(name, mac string) error {
 	return nil
 }
 
-func setInterfaceUp(name string) error {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-
+// setInterfaceUp brings a network interface up.
+// fd must be an open file descriptor that ioctl can be issued on (the TAP fd
+// or any socket); using the interface index here would fail with EBADF.
+func setInterfaceUp(fd uintptr, name string) error {
 	var ifreq struct {
 		Name  [unix.IFNAMSIZ]byte
 		Flags uint16
@@ -295,7 +309,7 @@ func setInterfaceUp(name string) error {
 	// Get current flags
 	_, _, errno := unix.Syscall(
 		unix.SYS_IOCTL,
-		uintptr(iface.Index),
+		fd,
 		unix.SIOCGIFFLAGS,
 		uintptr(unsafe.Pointer(&ifreq)),
 	)
@@ -308,7 +322,7 @@ func setInterfaceUp(name string) error {
 
 	_, _, errno = unix.Syscall(
 		unix.SYS_IOCTL,
-		uintptr(iface.Index),
+		fd,
 		unix.SIOCSIFFLAGS,
 		uintptr(unsafe.Pointer(&ifreq)),
 	)

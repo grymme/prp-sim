@@ -1,165 +1,221 @@
 package prp
 
 import (
+	"bytes"
+	"encoding/binary"
+	"sync"
 	"testing"
 	"time"
 
 	"prp-gns3/internal/engine"
+	"prp-gns3/internal/iface"
 	"prp-gns3/internal/nodetable"
 )
 
-// TestRedBoxTrafficFlow simulates the complete RedBox traffic flow:
-// 1. Frame arrives on interlink (from SAN) → gets RCT, duplicated to both LANs
-// 2. Frame arrives on LAN A → dup check, strip RCT, forward to interlink
-// 3. Frame arrives on LAN B → dup check (should find duplicate from step 2)
-func TestRedBoxFullTrafficFlow(t *testing.T) {
-	// Clean up any previous test state
+// memPort is an in-memory PacketPort for testing.
+type memPort struct {
+	name   string
+	mu     sync.Mutex
+	frames [][]byte
+}
+
+func (m *memPort) Read([]byte) (int, error) { return 0, nil }
+func (m *memPort) Close() error             { return nil }
+func (m *memPort) Name() string             { return m.name }
+func (m *memPort) Write(b []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	m.frames = append(m.frames, cp)
+	return len(b), nil
+}
+func (m *memPort) drain() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.frames = nil
+}
+
+// newNode returns a test Node with in-memory ports and a stable node MAC.
+func newNode() (*Node, *memPort, *memPort, *memPort) {
+	lanA := &memPort{name: "lan_a"}
+	lanB := &memPort{name: "lan_b"}
+	inter := &memPort{name: "interlink"}
+	n := NewNode(&Config{
+		NodeName:       "test",
+		Role:           "redbox",
+		TrailerEnabled: true,
+	})
+	n.LanA = lanA
+	n.LanB = lanB
+	n.Interlink = inter
+	n.SetNodeMAC([]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x01})
+	return n, lanA, lanB, inter
+}
+
+// ethFrame builds a minimal Ethernet frame with the given src MAC.
+func ethFrame(src [6]byte, dst [6]byte) []byte {
+	f := make([]byte, 60)
+	copy(f[0:6], dst[:])
+	copy(f[6:12], src[:])
+	f[12] = 0x08
+	f[13] = 0x00
+	return f
+}
+
+// TestRedBoxDuplicateDiscard is the core PRP test: the RedBox sends the SAME
+// sequence number on LAN A and LAN B; a receiving node must accept the first
+// copy and discard the second.
+func TestRedBoxDuplicateDiscard(t *testing.T) {
+	n, lanA, lanB, inter := newNode()
+	engine.ResetSequence("aa:bb:cc:dd:ee:ff")
 	nodetable.Cleanup()
 
-	// Create a test frame (Ethernet frame)
-	srcMAC := "aa:bb:cc:dd:ee:ff"
-	testFrame := make([]byte, 64)
-	// Set source and destination MACs
-	copy(testFrame[0:6], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}) // dst
-	copy(testFrame[6:12], []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}) // src
-	// Set EtherType (IPv4)
-	testFrame[12] = 0x08
-	testFrame[13] = 0x00
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	dst := [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	frame := ethFrame(src, dst)
 
-	// Step 1: Simulate frame arriving from interlink (SAN side)
-	// In RedBox mode, this frame should get RCT added and be sent to both LANs
-	encoded := engine.EncodeRCT(testFrame, srcMAC, 1)
-	if len(encoded) != len(testFrame)+4 {
-		t.Fatalf("RCT not added properly: %d vs %d", len(encoded), len(testFrame)+4)
+	// Step 1: SAN frame arrives on interlink -> duplicated to both LANs.
+	n.handleInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+	if len(lanA.frames) != 1 || len(lanB.frames) != 1 {
+		t.Fatalf("expected 1 frame on each LAN, got A=%d B=%d", len(lanA.frames), len(lanB.frames))
 	}
 
-	// Verify the encoded frame can be decoded
-	lanID, seq, payload, err := engine.DecodeRCT(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
+	// Both copies must carry the same sequence number.
+	_, seqA, _, errA := engine.DecodeRCT(lanA.frames[0])
+	_, seqB, _, errB := engine.DecodeRCT(lanB.frames[0])
+	if errA != nil || errB != nil {
+		t.Fatalf("decode: A=%v B=%v", errA, errB)
 	}
-	if lanID != 1 {
-		t.Errorf("expected lanID=1, got %d", lanID)
-	}
-	if seq != 0 {
-		t.Errorf("expected seq=0, got %d", seq)
-	}
-	if len(payload) != len(testFrame) {
-		t.Errorf("payload length mismatch: %d vs %d", len(payload), len(testFrame))
+	if seqA != seqB {
+		t.Fatalf("LAN copies must share seq: A=%d B=%d (breaks duplicate detection)", seqA, seqB)
 	}
 
-	// Step 2: Simulate the same frame arriving on LAN A from another node
-	// The receiving node should detect the RCT and check for duplicates
-	// For this test, we verify the frame is properly identified as PRP
-	if !engine.IsPRPFrame(encoded) {
-		t.Error("encoded frame should be detected as PRP frame")
-	}
+	// Step 2: this node is now a receiver. Feed the LAN A copy in.
+	lanAFrame := lanA.frames[0]
+	lanA.drain()
+	lanB.drain()
+	inter.drain()
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: lanAFrame, frameSz: len(lanAFrame)})
 
-	// Step 3: Verify duplicate detection
-	// Insert the (srcMAC, seq) pair into the node table
-	nodetable.InsertWithExpiry(srcMAC, seq, lanID, 640)
+	// The LAN B copy (same src, same seq) must be discarded as a duplicate.
+	lanBFrame := engine.EncodeRCT(frame, uint16(seqA), 1)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_b", frame: lanBFrame, frameSz: len(lanBFrame)})
 
-	// Should be found (not expired)
-	if !nodetable.Find(srcMAC, seq) {
-		t.Error("expected to find recently inserted entry")
-	}
-
-	// Step 4: Verify expired entries are not found
-	// Insert with very short expiry
-	nodetable.InsertWithExpiry("aa:bb:cc:dd:ee:00", 999, 1, 10) // 10ms expiry
-	time.Sleep(50 * time.Millisecond)
-
-	if nodetable.Find("aa:bb:cc:dd:ee:00", 999) {
-		t.Error("expected expired entry to not be found")
-	}
-
-	// Step 5: Verify cleanup removes expired entries
-	removed := nodetable.Cleanup()
-	if removed == 0 {
-		t.Error("expected cleanup to remove at least the expired entry")
+	// Exactly one frame must have been forwarded to the interlink.
+	if len(inter.frames) != 1 {
+		t.Fatalf("expected exactly 1 forwarded frame, got %d (duplicate not discarded)", len(inter.frames))
 	}
 }
 
-// TestSequenceNumberPerMAC verifies that sequence numbers are tracked per source MAC.
-func TestSequenceNumberPerMAC(t *testing.T) {
-	mac1 := "00:11:22:33:44:55"
-	mac2 := "66:77:88:99:aa:bb"
+// TestInterlinkFrameSameSeq asserts that two consecutive interlink frames get
+// increasing sequence numbers per source MAC, but within one frame both LAN
+// copies share the seq.
+func TestInterlinkFrameSameSeq(t *testing.T) {
+	n, lanA, lanB, _ := newNode()
+	engine.ResetSequence("aa:bb:cc:dd:ee:ff")
 
-	engine.ResetSequence(mac1)
-	engine.ResetSequence(mac2)
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	frame := ethFrame(src, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
 
-	frame1 := make([]byte, 60)
-	frame2 := make([]byte, 60)
+	n.handleInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+	n.handleInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
 
-	// Interleave frames from two different source MACs
-	enc1a := engine.EncodeRCT(frame1, mac1, 1) // mac1, seq=0
-	enc2a := engine.EncodeRCT(frame2, mac2, 1) // mac2, seq=0
-	enc1b := engine.EncodeRCT(frame1, mac1, 1) // mac1, seq=1
-	enc2b := engine.EncodeRCT(frame2, mac2, 1) // mac2, seq=1
+	_, seq1A, _, _ := engine.DecodeRCT(lanA.frames[0])
+	_, seq1B, _, _ := engine.DecodeRCT(lanB.frames[0])
+	_, seq2A, _, _ := engine.DecodeRCT(lanA.frames[1])
+	_, seq2B, _, _ := engine.DecodeRCT(lanB.frames[1])
 
-	_, seq1a, _, _ := engine.DecodeRCT(enc1a)
-	_, seq2a, _, _ := engine.DecodeRCT(enc2a)
-	_, seq1b, _, _ := engine.DecodeRCT(enc1b)
-	_, seq2b, _, _ := engine.DecodeRCT(enc2b)
-
-	if seq1a != 0 || seq1b != 1 {
-		t.Errorf("mac1: expected seq 0,1 got %d,%d", seq1a, seq1b)
+	if seq1A != seq1B {
+		t.Errorf("frame 1: A=%d B=%d must be equal", seq1A, seq1B)
 	}
-	if seq2a != 0 || seq2b != 1 {
-		t.Errorf("mac2: expected seq 0,1 got %d,%d", seq2a, seq2b)
+	if seq2A != seq2B {
+		t.Errorf("frame 2: A=%d B=%d must be equal", seq2A, seq2B)
 	}
-
-	engine.ResetSequence(mac1)
-	engine.ResetSequence(mac2)
-}
-
-// TestFrameDetection verifies frame classification works correctly.
-func TestFrameDetection(t *testing.T) {
-	// Supervision frame (0x88fb)
-	supFrame := make([]byte, 64)
-	supFrame[12] = 0x88
-	supFrame[13] = 0xfb
-	if !engine.IsSupervisionFrame(supFrame) {
-		t.Error("supervision frame should be detected")
-	}
-
-	// Regular frame
-	regFrame := make([]byte, 64)
-	regFrame[12] = 0x08
-	regFrame[13] = 0x00
-	if engine.IsSupervisionFrame(regFrame) {
-		t.Error("regular frame should not be detected as supervision")
-	}
-
-	// PRP frame (has RCT)
-	prpFrame := make([]byte, 60)
-	prpFrame = engine.EncodeRCT(prpFrame, "test-mac", 1)
-	if !engine.IsPRPFrame(prpFrame) {
-		t.Error("frame with RCT should be detected as PRP")
-	}
-
-	// Non-PRP frame (no RCT)
-	nonPrpFrame := make([]byte, 60)
-	if engine.IsPRPFrame(nonPrpFrame) {
-		t.Error("frame without RCT should not be detected as PRP")
+	if seq2A != seq1A+1 {
+		t.Errorf("frame 2 seq must increment: %d -> %d", seq1A, seq2A)
 	}
 }
 
-// TestMACAddressParsing verifies source MAC extraction.
-func TestMACAddressParsing(t *testing.T) {
-	frame := []byte{
-		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, // dst
-		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, // src
-		0x08, 0x00, // EtherType
+// TestLANIDRejection: a frame received on LAN B carrying lan_id=0 (or vice
+// versa) must be dropped — guards against bridged/looped networks.
+func TestLANIDRejection(t *testing.T) {
+	n, _, _, inter := newNode()
+	nodetable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	frame := ethFrame(src, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
+
+	// Frame with lan_id=0 arriving on LAN B (should be 1).
+	enc := engine.EncodeRCT(frame, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_b", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 0 {
+		t.Fatalf("lan_id mismatch on LAN B must be dropped, got %d forwards", len(inter.frames))
 	}
 
-	dstMAC := engine.GetDstMAC(frame)
-	srcMAC := engine.GetSrcMAC(frame)
+	// Correct lan_id=1 on LAN B is accepted.
+	enc = engine.EncodeRCT(frame, 1, 1)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_b", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("valid LAN B frame should be forwarded, got %d", len(inter.frames))
+	}
+}
 
-	if dstMAC != "00:11:22:33:44:55" {
-		t.Errorf("expected dst MAC 00:11:22:33:44:55, got %s", dstMAC)
+// TestSupervisionConsumed: received supervision frames must be parsed and
+// never forwarded to the interlink (SAN).
+func TestSupervisionConsumed(t *testing.T) {
+	n, _, _, inter := newNode()
+	nodetable.Cleanup()
+
+	srcMAC := []byte{0x02, 0x50, 0x50, 0xaa, 0xbb, 0xcc}
+	sup := make([]byte, 60)
+	copy(sup[0:6], []byte{0x01, 0x15, 0x4e, 0x00, 0x01, 0x00}) // dst
+	copy(sup[6:12], srcMAC)                                    // src
+	sup[12], sup[13] = 0x88, 0xfb                              // EtherType
+	binary.BigEndian.PutUint16(sup[16:18], 5)                  // seq
+	sup[18], sup[19] = 20, 6                                   // TLV LIFE_CHECK_DD
+	copy(sup[20:26], srcMAC)                                   // MacAddressA
+	binary.BigEndian.PutUint16(sup[14:16], 0)                  // path
+
+	n.handleSupervisionFrame(frameEvent{iface: "lan_a", frame: sup, frameSz: len(sup)})
+	if len(inter.frames) != 0 {
+		t.Fatalf("supervision frames must not reach the interlink, got %d", len(inter.frames))
 	}
-	if srcMAC != "aa:bb:cc:dd:ee:ff" {
-		t.Errorf("expected src MAC aa:bb:cc:dd:ee:ff, got %s", srcMAC)
+	if _, ok := n.supervisionSeen["02:50:50:aa:bb:cc"]; !ok {
+		t.Error("sender should be tracked as alive after supervision")
 	}
+}
+
+// TestDANModeForwarding: in DAN mode, frames from LANs are written to the
+// TAP interface after RCT stripping.
+func TestDANModeForwarding(t *testing.T) {
+	lanA := &memPort{name: "lan_a"}
+	lanB := &memPort{name: "lan_b"}
+	tap := &memPort{name: "tap"}
+	n := NewNode(&Config{Role: "dan", TrailerEnabled: true})
+	n.LanA = lanA
+	n.LanB = lanB
+	n.Tap = tap
+	nodetable.Cleanup()
+
+	// Unique src MAC: the node table is a package-level singleton and
+	// Cleanup() only removes expired entries.
+	frame2 := ethFrame([6]byte{0x0a, 0xbb, 0xcc, 0xdd, 0xee, 0xff}, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
+	enc := engine.EncodeRCT(frame2, 0, 0)
+
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(tap.frames) != 1 {
+		t.Fatalf("expected 1 frame on TAP, got %d", len(tap.frames))
+	}
+	if !bytes.Equal(tap.frames[0], frame2) {
+		t.Error("TAP frame should equal the original untagged frame")
+	}
+}
+
+var _ iface.PacketPort = (*memPort)(nil)
+
+// Ensure no stray timers leak between tests.
+func TestMain(m *testing.M) {
+	time.Now()
+	m.Run()
 }

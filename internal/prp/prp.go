@@ -1,29 +1,33 @@
 package prp
 
 import (
-	"encoding/binary"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
 
 	"prp-gns3/internal/engine"
 	"prp-gns3/internal/iface"
 	"prp-gns3/internal/nodetable"
+	"prp-gns3/internal/supervision"
 )
 
 // Node represents a PRP network node.
 type Node struct {
-	Config       *Config
-	LanA         *iface.RawSocket
-	LanB         *iface.RawSocket
-	Interlink    *iface.RawSocket
-	Tap          *iface.TAPSocket
-	seqCounters  map[string]uint16
-	frameBuffer  chan frameEvent
-	stopChan     chan struct{}
-	stopLock     sync.Mutex
-	cleanupTimer *time.Timer
+	Config          *Config
+	LanA            iface.PacketPort
+	LanB            iface.PacketPort
+	Interlink       iface.PacketPort
+	Tap             iface.PacketPort
+	mac             []byte
+	supSeq          uint16
+	seqCounters     map[string]uint16
+	frameBuffer     chan frameEvent
+	stopChan        chan struct{}
+	stopLock        sync.Mutex
+	cleanupTimer    *time.Timer
+	supervisionSeen map[string]time.Time
 }
 
 // StopChan returns the channel that is closed when the node is stopped.
@@ -33,16 +37,16 @@ func (n *Node) StopChan() <-chan struct{} {
 
 // Config holds the runtime configuration for a PRP node.
 type Config struct {
-	NodeName          string
-	Role              string
-	LanAInterface     string
-	LanBInterface     string
+	NodeName           string
+	Role               string
+	LanAInterface      string
+	LanBInterface      string
 	InterlinkInterface string
-	TapName           string
-	TapMAC            string
-	PRPID             int
-	TrailerEnabled    bool
-	Debug             bool
+	TapName            string
+	TapMAC             string
+	PRPID              int
+	TrailerEnabled     bool
+	Debug              bool
 }
 
 type frameEvent struct {
@@ -53,6 +57,9 @@ type frameEvent struct {
 
 // NewNode creates a new PRP node from the given configuration.
 func NewNode(cfg *Config) *Node {
+	if cfg == nil {
+		cfg = &Config{}
+	}
 	return &Node{
 		Config:      cfg,
 		seqCounters: make(map[string]uint16),
@@ -80,6 +87,11 @@ func (n *Node) Start() error {
 	}
 	n.LanA = lanA
 	log.Printf("prp: bound to %s (index %d, MTU %d)", lanA.Name(), lanA.IfIndex(), lanA.MTU())
+
+	// The node MAC is the MAC of the LAN A interface (real hardware MAC,
+	// unique per node — never derived from the PRP ID, which is shared by
+	// all nodes in the same PRP network).
+	n.mac = n.nodeMAC()
 
 	lanB, err := iface.CreateRawSocket(n.Config.LanBInterface)
 	if err != nil {
@@ -164,8 +176,8 @@ func (n *Node) periodicCleanup() {
 }
 
 // readLoop reads frames from a raw socket interface.
-func (n *Node) readLoop(rs *iface.RawSocket, ifaceName string) {
-	buf := make([]byte, rs.MTU()+512)
+func (n *Node) readLoop(rs iface.PacketPort, ifaceName string) {
+	buf := make([]byte, 2048)
 
 	for {
 		select {
@@ -301,7 +313,22 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	// Decode the RCT trailer
 	lanID, seq, payload, err := engine.DecodeRCT(event.frame)
 	if err != nil {
-		log.Printf("prp: failed to decode RCT: %v", err)
+		if n.Config.Debug {
+			log.Printf("prp: invalid RCT on %s: %v", event.iface, err)
+		}
+		return
+	}
+
+	// A frame received on LAN A must carry lan_id=0; on LAN B lan_id=1.
+	// Mismatches indicate a bridged/looped network and are dropped.
+	expected := 0
+	if event.iface == "lan_b" {
+		expected = 1
+	}
+	if lanID != expected {
+		if n.Config.Debug {
+			log.Printf("prp: lan_id %d on %s (expected %d), dropping", lanID, event.iface, expected)
+		}
 		return
 	}
 
@@ -339,11 +366,15 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 }
 
 // handleInterlinkFrame processes frames arriving from the interlink.
-// Flow: Interlink → add RCT → duplicate to both LANs
+// Flow: Interlink → add RCT → duplicate to both LANs.
+// Both LAN copies MUST carry the same sequence number (PRP duplicate
+// detection on the receiver keys on (src MAC, seq)).
 func (n *Node) handleInterlinkFrame(event frameEvent) {
 	if n.Config.Debug {
 		log.Printf("prp: interlink frame (%d bytes)", event.frameSz)
 	}
+
+	srcMAC := engine.GetSrcMAC(event.frame)
 
 	if !n.Config.TrailerEnabled {
 		// No RCT - just forward to both LANs as-is
@@ -352,10 +383,12 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 		return
 	}
 
-	// Add RCT trailer to the frame
-	srcMAC := engine.GetSrcMAC(event.frame)
-	lanAFrame := engine.EncodeRCT(event.frame, srcMAC, 1)
-	lanBFrame := engine.EncodeRCT(event.frame, srcMAC, 2)
+	// Allocate ONE sequence number for this frame; both copies use it.
+	seq := engine.NextSequence(srcMAC)
+
+	// LAN A = 0, LAN B = 1 (IEC 62439-3 / kernel numbering).
+	lanAFrame := engine.EncodeRCT(event.frame, seq, 0)
+	lanBFrame := engine.EncodeRCT(event.frame, seq, 1)
 
 	// Send to both LANs
 	if _, err := n.LanA.Write(lanAFrame); err != nil {
@@ -366,12 +399,13 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	}
 
 	if n.Config.Debug {
-		log.Printf("prp: duplicated frame to both LANs (seq managed per src MAC)")
+		log.Printf("prp: duplicated frame (seq %d) to both LANs", seq)
 	}
 }
 
 // handleDANFrame processes frames arriving from the TAP interface.
-// In DAN mode, these are application frames that need RCT added before sending to LANs.
+// In DAN mode, these are application frames that need RCT added before
+// sending to LANs. Both LAN copies carry the same sequence number.
 func (n *Node) handleDANFrame(event frameEvent) {
 	if n.Config.Debug {
 		log.Printf("prp: DAN frame from TAP (%d bytes)", event.frameSz)
@@ -386,9 +420,9 @@ func (n *Node) handleDANFrame(event frameEvent) {
 		return
 	}
 
-	// Add RCT trailer
-	lanAFrame := engine.EncodeRCT(event.frame, srcMAC, 1)
-	lanBFrame := engine.EncodeRCT(event.frame, srcMAC, 2)
+	seq := engine.NextSequence(srcMAC)
+	lanAFrame := engine.EncodeRCT(event.frame, seq, 0)
+	lanBFrame := engine.EncodeRCT(event.frame, seq, 1)
 
 	if _, err := n.LanA.Write(lanAFrame); err != nil {
 		log.Printf("prp: failed to write to LAN A: %v", err)
@@ -398,78 +432,72 @@ func (n *Node) handleDANFrame(event frameEvent) {
 	}
 
 	if n.Config.Debug {
-		log.Printf("prp: DAN frame duplicated to both LANs")
+		log.Printf("prp: DAN frame duplicated (seq %d) to both LANs", seq)
 	}
 }
 
-// handleSupervisionFrame processes PRP supervision frames (0x88fb).
+// handleSupervisionFrame processes received PRP supervision frames (0x88fb).
+// Supervision frames are consumed locally — a RedBox must NOT forward them
+// to the interlink (SAN) as data traffic.
 func (n *Node) handleSupervisionFrame(event frameEvent) {
-	if n.Config.Debug {
-		log.Printf("prp: supervision frame received on %s (%d bytes)", event.iface, event.frameSz)
+	sup := supervision.Parse(event.frame)
+	if sup == nil {
+		if n.Config.Debug {
+			log.Printf("prp: unparseable supervision frame on %s", event.iface)
+		}
+		return
 	}
-
-	// For now, just log. A full implementation would parse and process
-	// the supervision payload for node discovery and network monitoring.
+	if n.Config.Debug {
+		log.Printf("prp: supervision from %s on %s (seq %d, tlv %d)", sup.SrcMAC, event.iface, sup.Seq, sup.TLVType)
+	}
+	// Track liveness of the sending node.
+	if n.supervisionSeen == nil {
+		n.supervisionSeen = make(map[string]time.Time)
+	}
+	n.supervisionSeen[sup.SrcMAC] = time.Now()
 }
 
-// SendSupervisionFrame sends a supervision frame on both LANs.
+// SendSupervisionFrame sends a PRP supervision frame on both LANs.
+// Each LAN copy carries an RCT with the correct LAN ID (0 for A, 1 for B)
+// and the same sequence number.
 func (n *Node) SendSupervisionFrame() {
-	supPayload := n.buildSupervisionFrame()
+	srcMAC := n.mac
+	if srcMAC == nil {
+		srcMAC = n.nodeMAC()
+	}
 
-	// Send on LAN A
-	frameA := make([]byte, len(supPayload))
-	copy(frameA, supPayload)
-	n.LanA.Write(frameA)
+	n.supSeq++
+	frameA := supervision.BuildRCTed(srcMAC, n.supSeq, 0)
+	frameB := supervision.BuildRCTed(srcMAC, n.supSeq, 1)
 
-	// Send on LAN B
-	frameB := make([]byte, len(supPayload))
-	copy(frameB, supPayload)
-	n.LanB.Write(frameB)
+	if _, err := n.LanA.Write(frameA); err != nil {
+		log.Printf("prp: failed to write supervision to LAN A: %v", err)
+	}
+	if _, err := n.LanB.Write(frameB); err != nil {
+		log.Printf("prp: failed to write supervision to LAN B: %v", err)
+	}
 
 	if n.Config.Debug {
-		log.Printf("prp: supervision frame sent on both LANs")
+		log.Printf("prp: supervision frame (seq %d) sent on both LANs", n.supSeq)
 	}
 }
 
-// buildSupervisionFrame constructs a supervision frame payload.
-func (n *Node) buildSupervisionFrame() []byte {
-	// Supervision frame structure:
-	// Destination MAC: 01-15-72-00-00-00 (PRP multicast)
-	// Source MAC: our node MAC
-	// EtherType: 0x88fb
-	// Payload: PRP-ID, LAN-ID, Node State, Seq, etc.
-
-	dstMAC := []byte{0x01, 0x15, 0x72, 0x00, 0x00, 0x00}
-	srcMAC := n.nodeMAC()
-
-	payload := make([]byte, 0, 256)
-	payload = append(payload, dstMAC...)
-	payload = append(payload, srcMAC...)
-	etype := make([]byte, 2)
-	binary.BigEndian.PutUint16(etype, 0x88fb)
-	payload = append(payload, etype...)
-
-	// Supervision payload
-	// PRP-ID (1 byte)
-	payload = append(payload, byte(n.Config.PRPID))
-	// LAN-ID (1 byte) - 1 for A, 2 for B
-	payload = append(payload, 0x01)
-	// Node State (1 byte) - 0 = Active
-	payload = append(payload, 0x00)
-	// Padding
-	payload = append(payload, 0x00, 0x00, 0x00)
-
-	// Pad to minimum Ethernet frame size
-	minFrameSize := 64
-	if len(payload) < minFrameSize {
-		payload = append(payload, make([]byte, minFrameSize-len(payload))...)
-	}
-
-	return payload
-}
-
+// nodeMAC returns the node's MAC address. It prefers the TAP MAC when
+// configured, otherwise the MAC of the LAN A interface. It must never be
+// derived from the PRP ID — all nodes in a PRP network share the PRP ID,
+// which would cause MAC collisions.
 func (n *Node) nodeMAC() []byte {
-	// Derive a MAC from the PRP ID
+	// Use the LAN A interface hardware address when bound to a real
+	// interface.
+	if n.Config.LanAInterface != "" && n.mac == nil {
+		if iface, err := net.InterfaceByName(n.Config.LanAInterface); err == nil {
+			return append([]byte(nil), iface.HardwareAddr...)
+		}
+	}
+	// Fallback for tests / synthetic ports.
+	if n.mac != nil {
+		return n.mac
+	}
 	mac := make([]byte, 6)
 	mac[0] = 0x02
 	mac[1] = 0x50
@@ -478,4 +506,10 @@ func (n *Node) nodeMAC() []byte {
 	mac[4] = byte(n.Config.PRPID)
 	mac[5] = 0x00
 	return mac
+}
+
+// SetNodeMAC allows tests (and callers without a real LAN A interface) to
+// set an explicit node MAC.
+func (n *Node) SetNodeMAC(mac []byte) {
+	n.mac = append([]byte(nil), mac...)
 }
