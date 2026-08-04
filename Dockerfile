@@ -22,7 +22,7 @@ FROM alpine:3.19
 #   iproute2      — ip link/addr for interface and TAP setup
 #   busybox-extras — provides telnetd (not in Alpine's minimal busybox)
 #                     for GNS3 console access on port 5000
-RUN apk add --no-cache iproute2 busybox-extras
+RUN apk add --no-cache iproute2 busybox-extras tcpdump
 
 # Copy only the binary and static files from builder
 COPY --from=builder /prpd /usr/local/bin/prpd
