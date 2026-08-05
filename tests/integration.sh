@@ -18,8 +18,12 @@ echo "==> building image"
 docker build -t prp-sim:test -f ../Dockerfile ../
 
 cleanup() {
-    # Stop and remove test containers + networks + volumes.
+    # Stop and remove test containers + networks + volumes. Kill any
+    # container that survived compose down (e.g. left running by a failed
+    # test) so no stray tests_* / tg-* resources outlive the suite.
     docker compose down -v >/dev/null 2>&1 || true
+    docker ps -aq --filter 'name=^/(tg-|tests-)' | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker network prune -f --filter 'label=com.docker.compose.project=tests' >/dev/null 2>&1 || true
     # Remove the locally built test image so no dangling artifacts remain
     # (GHCR is only updated on tagged releases, so this image is always
     # built from the current tree and never reused by a later test run).
