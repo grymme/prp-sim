@@ -282,6 +282,46 @@ For HSR simulation, use a separate HSR simulator.
 | **Standard** | IEC 62439-3 | IEC 62439-3 |
 | **Use Case** | Substation automation | Industrial networks |
 
+## HSR / HSR-PRP support
+
+### HSR ring (role `hsr-san`)
+
+The simulator is also a full HSR RedBox: it bridges a SAN into an HSR
+ring (IEC 62439-3 Clause 5). Ring frames carry the 6-byte HSR tag
+(EtherType `0x892F`, after any VLAN tag): PathId(4b) | LSDU size(12b) |
+sequence nr(16b) | encapsulated EtherType(16b) — matching the Linux
+kernel `net/hsr` implementation.
+
+- Frames injected from the SAN are tagged with path 0 and sent on both
+  ring ports with one sequence number.
+- Ring nodes forward path-0 frames around the ring (path set to 1);
+  path-1 frames are not re-forwarded; the originator discards its own
+  frame after a full lap; `(src MAC, seq)` duplicate detection delivers
+  exactly once.
+- Ring supervision uses `0x88FB` with the HSR path bits (no RCT).
+
+### HSR-PRP coupling (role `hsr-prp`)
+
+Connects an HSR ring to ONE PRP LAN; two such RedBoxes (one per LAN)
+form the HSR↔PRP Dual RedBox topology. Configured via `hsr.prp_id`
+(NetId, 1-6, shared by the pair) and `hsr.lan_id` (A|B):
+
+- PRP LAN → ring: RCT stripped, seq preserved, HSR tag carries
+  PathId = (NetId<<1)|LanId.
+- Ring → PRP LAN: HSR tag stripped, RCT added with the preserved seq.
+  Per IEC 62439-3:2021/COR1 §5.2.2.3.1, a ring frame whose PathId.NetId
+  equals ours but whose LanId differs is dropped (a frame from the other
+  PRP LAN must never be reinjected onto ours).
+- Supervision frames are proxy-translated between the two dialects
+  (§5.2.2.3.2): HSR supervision on the ring, PRP supervision (with RCT)
+  on the coupled LAN.
+
+### HSR-HSR (role `hsr-hsr`, QuadBox)
+
+The role is config-validated and registered; full implementation is a
+follow-up. Ring ports speak HSR; the interlink will carry HSR-tagged
+traffic for a second ring.
+
 ## References
 
 - **IEC 62439-3:2016**: Industrial communication networks – High availability automation networks – Part 3

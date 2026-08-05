@@ -4,8 +4,8 @@ A userspace implementation of the **Parallel Redundancy Protocol (PRP, IEC 62439
 
 ## Features
 
-- Full IEC 62439-3 compliance (6-byte RCT trailer, duplicate detection, supervision frames)
-- **RedBox mode**: bridges a SAN (interlink) port onto both PRP LANs
+- Full IEC 62439-3 compliance (6-byte RCT trailer / HSR tag, duplicate detection, supervision frames)
+- **RedBox modes**: PRP-SAN (SAN into two PRP LANs), HSR-SAN (SAN into an HSR ring), HSR-PRP (dual-RedBox ring↔PRP coupling)
 - Configurable via YAML file
 - GNS3 integration via `.gns3a` appliance
 - Lightweight Docker image (~13MB)

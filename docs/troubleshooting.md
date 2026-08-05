@@ -341,16 +341,18 @@ python3 -c "import yaml; yaml.safe_load(open('config.yaml'))"
 # Fix syntax errors (indentation, quotes, etc.)
 ```
 
-### "error: invalid role: xxx (must be redbox)"
+### "error: invalid role: xxx (must be prp-san, hsr-san, hsr-prp or hsr-hsr)"
 
 **Cause**: Invalid role in config.
 
 **Solution**:
 ```yaml
-# Use valid role
+# Use a valid role
 node:
-  role: redbox
+  role: prp-san   # or hsr-san, hsr-prp, hsr-hsr
 ```
+For `hsr-prp` also set `hsr.prp_id` (1-6) and `hsr.lan_id` (A|B) —
+missing/invalid values are rejected at load with a descriptive error.
 
 ### "error: lan_a and lan_b interfaces must be specified"
 

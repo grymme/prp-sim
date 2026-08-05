@@ -59,10 +59,45 @@ Both IED appliances are configurable via per-node environment variables
 | `IEC_CONFREV` | `1` | configuration revision (`confRev`) |
 | `IEC_SVID` | `MU01` | SV `svID` (subscriber filters on this) |
 | `IEC_STEVENTS` | `10` | GOOSE state changes per N events (stNum++) |
+| `IEC_GCB` | `LLN0$GO$gcb0` | GOOSE control-block reference (`gocbRef`) |
+| `IEC_DSET` | `LLN0$dataset` | GOOSE dataset reference (`datSet`) |
+| `IEC_GOID` | `LLN0$GO$gcb0` | GOOSE ID (`goID`) |
+| `IEC_CONFREV` | `1` | configuration revision (`confRev`) |
+| `IEC_SVID` | `MU01` | SV `svID` (subscriber filters on this) |
+| `IEC_STEVENTS` | `10` | GOOSE state changes per N events (stNum++) |
 
 Publisher and subscriber must share the same `IEC_APPID` (and, for SV,
 `IEC_SVID`).
 
+---
+
+## HSR and HSR-PRP coupling
+
+The same RedBox also runs HSR (IEC 62439-3 Clause 5). Set the role per
+node via `PRP_ROLE` (or `node.role` in the config):
+
+- **`hsr-san`** — SAN into an HSR ring. eth0/eth1 are ring ports A/B,
+  eth2 is the SAN. Ring frames carry the real 0x892F HSR tag; ring
+  failover is seamless.
+- **`hsr-prp`** — connect an HSR ring to one PRP LAN (the *dual RedBox*
+  coupling: place two of them on the ring, one on LAN A, one on LAN B).
+  Configure `HSR_PRP_ID` (NetId, same on both) and `HSR_LAN_ID` (A|B).
+  Frames cross the ring↔PRP boundary with the sequence number preserved,
+  and the PathId reinjection check (IEC 62439-3 COR1 5.2.2.3.1) keeps
+  LAN-A traffic off LAN B.
+
+Example ring topology:
+
+```
+[SAN] ── [RB hsr-san] ── ring ── [RB hsr-prp, LAN A] ── PRP LAN A
+                              │                        └── PRP LAN B
+                              └── [RB hsr-prp, LAN B] ──┘
+```
+
+Committed Docker topologies: `tests/topologies/hsr-ring/` and
+`tests/topologies/hsr-prp-coupling/` (run `tests/hsr-integration.sh`).
+
+---
 ---
 
 ## Hybrid: virtual RedBox + real switches + real RedBox

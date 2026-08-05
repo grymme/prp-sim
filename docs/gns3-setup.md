@@ -139,6 +139,22 @@ Both LANs operate in parallel. If LAN A fails, traffic continues uninterrupted o
 
 - A **RedBox** bridges a SAN (via `eth2` interlink) into both PRP LANs.
 - SAN devices (hosts, IEDs) connect to the interlink port.
+### HSR ring and HSR-PRP coupling
+
+The same appliance also runs HSR. Per node, set `PRP_ROLE` (and, for
+`hsr-prp`, `HSR_PRP_ID` + `HSR_LAN_ID`) in the node's environment:
+
+| `PRP_ROLE` | Meaning | Ports |
+|---|---|---|
+| `prp-san` (default) | SAN → two PRP LANs | eth0/eth1 = LAN A/B, eth2 = SAN |
+| `hsr-san` | SAN → HSR ring | eth0/eth1 = ring A/B, eth2 = SAN |
+| `hsr-prp` | HSR ring → one PRP LAN | eth0/eth1 = ring A/B, eth2 = PRP LAN |
+| `hsr-hsr` | two HSR rings (QuadBox, follow-up) | eth0/eth1 = ring 1, eth2 = ring 2 |
+
+For the HSR-PRP **dual RedBox** coupling, put two `hsr-prp` nodes on the
+same ring — one with `HSR_LAN_ID=A` attached to PRP LAN A, one with
+`HSR_LAN_ID=B` attached to LAN B, both sharing `HSR_PRP_ID` (e.g. 1).
+
 ### Connection Guide
 
 | Node Interface | Connect To | Cable Type |

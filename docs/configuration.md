@@ -20,7 +20,9 @@ define per-node environment variables.
 | Variable | Config path | Example |
 |----------|-------------|---------|
 | `PRP_CONFIG_PATH` | (config file path) | `/custom/config.yaml` |
-| `PRP_ROLE` | `node.role` | `redbox` |
+| `PRP_ROLE` | `node.role` | `prp-san` |
+| `HSR_PRP_ID` | `hsr.prp_id` | `1` |
+| `HSR_LAN_ID` | `hsr.lan_id` | `A` |
 | `PRP_PRP_ID` | `prp.prp_id` | `2` |
 | `PRP_LAN_A_IP` | `interfaces.ipv4.lan_a` | `10.0.0.1/24` |
 | `PRP_LAN_B_IP` | `interfaces.ipv4.lan_b` | `10.0.0.2/24` |
@@ -32,7 +34,7 @@ define per-node environment variables.
 ```yaml
 node:
   name: "string"       # Required: Node name
-  role: "string"       # Required: "redbox"
+  role: "string"       # Required: "prp-san" | "hsr-san" | "hsr-prp" | "hsr-hsr"
 
 interfaces:
   lan_a: "string"      # Required: LAN A interface name
@@ -46,6 +48,10 @@ interfaces:
 prp:
   prp_id: integer      # PRP network ID; 0 = auto-derive from hostname
   trailer_enabled: boolean  # Optional: Enable RCT (default: true)
+
+hsr:
+  prp_id: integer      # HSR-PRP coupling: NetId of the coupled PRP network (1-6)
+  lan_id: "string"     # HSR-PRP coupling: which PRP LAN the interlink attaches to (A|B)
 
 supervision:
   enabled: boolean           # Optional: Enable supervision (default: true)
@@ -72,7 +78,7 @@ interlink:
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Human-readable node name. Appears in supervision frames and logs. |
-| `role` | string | Yes | `redbox` | Operating mode. `redbox` bridges SAN traffic to PRP LANs. |
+| `role` | string | Yes | `prp-san` | Operating mode. `prp-san` bridges a SAN to two PRP LANs (legacy name `redbox`); `hsr-san` bridges a SAN into an HSR ring; `hsr-prp` couples an HSR ring to one PRP LAN; `hsr-hsr` (QuadBox, follow-up) couples two HSR rings. |
 
 ### interfaces
 
@@ -172,7 +178,7 @@ interlink:
 
 ## Validation Rules
 
-- `role` must be `redbox`
+- `role` must be `prp-san`, `hsr-san`, `hsr-prp` or `hsr-hsr`; `hsr-prp` requires `hsr.prp_id` (1-6) and `hsr.lan_id` (A|B)
 - `prp_id` must be 0 (auto-derive) or a positive integer
 - Static IPs must be valid IPv4 CIDR notation (IPv6 rejected)
 - `multicast_filter.first_octet` must be 1-6 hex bytes (e.g. `"01-00-5E"`)
