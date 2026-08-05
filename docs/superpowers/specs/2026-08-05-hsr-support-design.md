@@ -28,7 +28,8 @@ Add HSR (High-availability Seamless Redundancy) to the simulator RedBox. Four We
   - SAN interlink → add HSR tag (path=0, seq from seqMgr) → send on both ring ports. Own frame returning after a full lap discarded (src-MAC check).
 - **HSR-PRP** (ring A/B + one PRP LAN on interlink):
   - PRP LAN → ring: strip RCT, add HSR tag with **PathId = (net_id, lan_id)**, **preserve the RCT seq** end-to-end, send both ring ports.
-  - Ring → PRP LAN: dedup, strip HSR tag, **PathId reinjection check** (PathId NetId == ours && LanId != our lan_id → drop; own returned PathId → drop), add RCT with our lan_id and preserved seq, send to LAN port.
+  - Ring → PRP LAN: dedup, strip HSR tag, **PathId reinjection check per IEC 62439-3 (COR1 2023 §5.2.2.3.1)**: drop the frame iff `PathId.NetId == our NetId && PathId.LanId != our LanId` (frames from the *other* PRP LAN of the same coupled network must never reach our interlink; frames from our own LAN are discarded by the node-table dedup when they complete a lap; frames with a different NetId — pure-HSR ring traffic or another coupled network — are forwarded), add RCT with our lan_id and preserved seq → interlink.
+  - **Supervision proxy translation (§5.2.2.3.2)**: an HSR-PRP RedBox translates supervision frames in both directions — HSR supervision (0x88FB, path bits, TLV 22/23) received on the ring is converted to PRP supervision (RCT + lan_id + TLV 20) before forwarding to the interlink LAN, and PRP supervision from the LAN is converted to HSR supervision before injecting into the ring. This is required because DANPs cannot parse HSR supervision frames and DANHs cannot parse PRP supervision frames.
 
 ## 4 — Dedup & sequencing
 - One nodetable + one seqMgr per source MAC, shared across ring and LAN ports.
@@ -57,8 +58,7 @@ Add HSR (High-availability Seamless Redundancy) to the simulator RedBox. Four We
 ### 7.2 In-memory topology tests (`internal/prp`, `memPort` style — no Docker)
 - **Fake clock**: `Node.now()` injectable (defaults to wall time) → forget-time, supervision timeout, reboot-flush, restart-collision tests run deterministically in ms, no sleeps; run with `-race`.
 - Ring of 3–4 HSR-SAN RedBoxes: exactly-once (2 ring laps, 1 delivery); ring-break fault-injection matrix (each link) → 0 loss; multicast full-ring traversal; originator discard.
-- HSR-PRP dual RedBox coupling: identical seq on LAN A/B → exactly-once; PathId reinjection (LAN-A frame must NOT reappear on LAN B); NetId-mismatch and LanId-mismatch drop cases.
-- Seq preservation & 16-bit wrap; restart seq flush; own-MAC-return drop; malformed tag → drop, no crash; NetId outside 1–6 rejected at load.
+- HSR-PRP dual RedBox coupling: identical seq on LAN A/B → exactly-once; **PathId reinjection per IEC 62439-3 COR1 §5.2.2.3.1** (frame from LAN A must NOT reappear on LAN B: NetId-mismatch frames forwarded, same-NetId-different-LanId dropped, own-LanId frames discarded by node-table lap detection); supervision proxy translation in both directions; seq preservation & 16-bit wrap; restart seq flush; own-MAC-return drop; malformed tag → drop, no crash; NetId outside 1–6 rejected at load.
 
 ### 7.3 Docker integration suite (extends `tests/integration.sh`; keeps 12 PRP tests green)
 - HSR-SAN ring: 3 RedBoxes + SAN ping; failover by disconnecting each ring link; reconnect.
