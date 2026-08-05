@@ -1,7 +1,8 @@
 // trafficgen — GOOSE / Sampled Values (IEC 61850) traffic generator for
-// e2e-testing the PRP simulator over raw sockets.
+// the PRP simulator. Runs on Linux (AF_PACKET raw socket) and Windows
+// (Npcap wpcap.dll).
 //
-// It can run in three modes:
+// It can run in these modes:
 //
 //	send    send GOOSE-like frames on one interface with a configurable
 //	        rate, count and VLAN tag. Every frame carries a payload with
@@ -26,21 +27,24 @@
 //	# burst (2,4,8,16... ms spacing) and a PCP=4 VLAN tag:
 //	docker run --rm --privileged --network tests_san-net-a \
 //	    prp-sim:test trafficgen --mode send --iface eth0 --appid 0x1001 \
-//	    --count 100 --rate 100 --vlan 4
+//	    --count 100 --rate 100 --vid 0 --pcp 4 --burst
+//
+//	# On Windows, point --iface at a physical NIC (by Npcap name, 1-based
+//	# index, or a substring of the NIC's friendly description):
+//	trafficgen-windows-amd64.exe --mode send --iface "Ethernet" --loop \
+//	    --appid 0x1001 --rate 5 --vid 0 --pcp 4 --burst
 package main
 
 import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"net"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
-	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -175,6 +179,37 @@ func buildFrame(appid uint16, seq uint32, vid, pcp int) []byte {
 	return frame
 }
 
+// buildFrameEt is buildFrame with a configurable EtherType (GOOSE 0x88B8
+// or SV 0x88BA) and destination MAC, so the same tool generates Sampled
+// Values streams too.
+func buildFrameEt(appid uint16, seq uint32, vid, pcp int, et uint16, dst []byte) []byte {
+	payload := make([]byte, payloadLen)
+	binary.BigEndian.PutUint16(payload[0:2], appid)
+	binary.BigEndian.PutUint32(payload[2:6], seq)
+	binary.BigEndian.PutUint64(payload[6:14], uint64(time.Now().UnixNano()))
+
+	tagged := vid >= 0
+	var frame []byte
+	if tagged {
+		frame = make([]byte, 14+4+payloadLen)
+	} else {
+		frame = make([]byte, 14+payloadLen)
+	}
+	copy(frame[0:6], dst)
+	copy(frame[6:12], srcMAC)
+	if tagged {
+		frame[12], frame[13] = 0x81, 0x00 // 802.1Q
+		tci := uint16(pcp&0x07)<<13 | uint16(vid&0x0FFF)
+		binary.BigEndian.PutUint16(frame[14:16], tci)
+		binary.BigEndian.PutUint16(frame[16:18], et)
+		copy(frame[18:18+payloadLen], payload)
+	} else {
+		binary.BigEndian.PutUint16(frame[12:14], et)
+		copy(frame[14:14+payloadLen], payload)
+	}
+	return frame
+}
+
 // parseFrame extracts (appid, seq, txns, vid, pcp) from a received frame.
 // Returns ok=false when the frame is not one of ours (wrong ethertype/appid).
 func parseFrame(frame []byte, wantAppid uint16) (appid uint16, seq uint32, sentAt time.Time, vid, pcp int, ok bool) {
@@ -206,43 +241,25 @@ func parseFrame(frame []byte, wantAppid uint16) (appid uint16, seq uint32, sentA
 	return appid, seq, time.Unix(0, int64(txns)), vid, pcp, true
 }
 
-func openSocket(iface string) (int, int, error) {
-	ifIndex, err := net.InterfaceByName(iface)
-	if err != nil {
-		return 0, 0, err
+// parseMAC parses "aa:bb:cc:dd:ee:ff" into 6 bytes.
+func parseMAC(s string) ([]byte, error) {
+	if len(s) != 17 {
+		return nil, fmt.Errorf("bad MAC %q (want aa:bb:cc:dd:ee:ff)", s)
 	}
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(0x0003)))
-	if err != nil {
-		return 0, 0, err
+	out := make([]byte, 6)
+	for i := 0; i < 6; i++ {
+		var b int
+		if _, err := fmt.Sscanf(s[i*3:i*3+2], "%x", &b); err != nil {
+			return nil, fmt.Errorf("bad MAC %q", s)
+		}
+		out[i] = byte(b)
 	}
-	addr := &unix.RawSockaddrLinklayer{Family: unix.AF_PACKET, Ifindex: int32(ifIndex.Index)}
-	if _, _, errno := unix.Syscall(unix.SYS_BIND, uintptr(fd),
-		uintptr(unsafe.Pointer(addr)), uintptr(unix.SizeofSockaddrLinklayer)); errno != 0 {
-		unix.Close(fd)
-		return 0, 0, errno
-	}
-	unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 512*1024)
-	// VLAN RX offload strips 802.1Q tags and returns them as ancillary
-	// data; without PACKET_AUXDATA the receiver would never see the tag.
-	// (Same mechanism as prpd's RawSocket.)
-	unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_AUXDATA, 1)
-	return fd, ifIndex.Index, nil
-}
-
-func htons(v uint16) uint16 { return v<<8 | v>>8 }
-
-func sendFrame(fd int, frame []byte) error {
-	_, _, errno := unix.Syscall6(unix.SYS_SENDTO, uintptr(fd),
-		uintptr(unsafe.Pointer(&frame[0])), uintptr(len(frame)), 0, 0, 0)
-	if errno != 0 {
-		return errno
-	}
-	return nil
+	return out, nil
 }
 
 func main() {
 	mode := flag.String("mode", "ping", "send | recv | ping")
-	iface := flag.String("iface", "eth0", "interface name")
+	iface := flag.String("iface", "eth0", "interface name (Linux: eth0; Windows: Npcap name, 1-based index, or NIC description substring)")
 	appid := flag.Uint("appid", 0x1001, "GOOSE appid (hex)")
 	count := flag.Int("count", 100, "frames to send (send/ping)")
 	rate := flag.Float64("rate", 100, "frames per second (send/ping)")
@@ -250,39 +267,102 @@ func main() {
 	vid := flag.Int("vid", -1, "VLAN ID to tag frames with (-1 = untagged); IEC 61850 legacy default is 0 (null VLAN) with priority tagging")
 	pcp := flag.Int("pcp", 4, "VLAN priority (PCP 0-7) to tag frames with; IEC 61850 baseline default is 4")
 	burst := flag.Bool("burst", false, "GOOSE-style retransmit burst spacing (send)")
+	loop := flag.Bool("loop", false, "run continuously until Ctrl+C (send/recv)")
+	et := flag.String("et", "goose", "ethertype to send: goose (0x88B8) | sv (0x88BA)")
+	mcast := flag.String("mcast", "", "destination MAC for send (default: 01:0c:cd:01:00:01 for goose, 01:0c:cd:04:00:00 for sv)")
+	src := flag.String("src-mac", "02:00:00:00:00:01", "source MAC for send")
+	list := flag.Bool("list-devices", false, "list available interfaces and exit")
 	flag.Parse()
+
+	if *list {
+		listDevices()
+		os.Exit(0)
+	}
+
+	var etV uint16
+	switch strings.ToLower(*et) {
+	case "goose":
+		etV = etGOOSE
+		if *mcast == "" {
+			*mcast = "01:0c:cd:01:00:01"
+		}
+	case "sv":
+		etV = etSV
+		if *mcast == "" {
+			*mcast = "01:0c:cd:04:00:00"
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "bad --et %q (want goose or sv)\n", *et)
+		os.Exit(1)
+	}
+	dst, err := parseMAC(*mcast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bad --mcast: %v\n", err)
+		os.Exit(1)
+	}
+	srcBytes, err := parseMAC(*src)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bad --src-mac: %v\n", err)
+		os.Exit(1)
+	}
+	srcMAC = srcBytes
+	dstMAC = dst
 
 	appidV := uint16(*appid)
 
 	switch *mode {
 	case "send":
-		send(*iface, appidV, *count, *rate, *vid, *pcp, *burst)
+		send(*iface, appidV, *count, *rate, *vid, *pcp, *burst, *loop, etV)
 	case "recv":
-		recv(*iface, appidV, *duration)
+		recv(*iface, appidV, *duration, *loop)
 	default: // ping
 		pingMode(*iface, appidV, *count, *rate, *vid, *pcp)
 	}
 }
 
-// send transmits count frames, optionally with GOOSE-style retransmit
-// bursts (each logical event retransmitted at T+2,T+4,T+8...ms with a
-// NEW seq number, exactly like a real IED).
-func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int, burst bool) {
-	fd, _, err := openSocket(ifaceName)
+// stopChan returns a channel closed on SIGINT/SIGTERM.
+func stopChan() <-chan struct{} {
+	ch := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		close(ch)
+	}()
+	return ch
+}
+
+// send transmits count frames (or until Ctrl+C with --loop), optionally
+// with GOOSE-style retransmit bursts (each logical event retransmitted at
+// T+2,T+4,T+8...ms with a NEW seq number, exactly like a real IED).
+func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int, burst, loop bool, et uint16) {
+	sock, err := openSocket(ifaceName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open %s: %v\n", ifaceName, err)
 		os.Exit(1)
 	}
-	defer unix.Close(fd)
+	defer sock.Close()
 
-	interval := time.Duration(float64(time.Second) / rate)
-	fmt.Printf("send: %d frames @ %.0f Hz, vid=%d pcp=%d, burst=%v\n", count, rate, vid, pcp, burst)
+	fmt.Printf("send: %d frames @ %.0f Hz, vid=%d pcp=%d, burst=%v, et=0x%04x\n", count, rate, vid, pcp, burst, et)
 	start := time.Now()
 	seq := uint32(1)
+	if loop {
+		count = int(^uint(0) >> 1) // huge; run until signal
+	}
+	stop := stopChan()
+	interval := time.Duration(float64(time.Second) / rate)
+	sent := 0
 	for i := 0; i < count; i++ {
+		select {
+		case <-stop:
+			fmt.Printf("send: stopped by signal after %d frames in %s\n", sent, time.Since(start).Round(time.Millisecond))
+			return
+		default:
+		}
 		seq++
-		frame := buildFrame(appid, seq, vid, pcp)
-		if err := sendFrame(fd, frame); err != nil {
+		sent++
+		frame := buildFrameEt(appid, seq, vid, pcp, et, dstMAC)
+		if err := sock.Send(frame); err != nil {
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
 			os.Exit(1)
 		}
@@ -290,45 +370,80 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 			// Retransmit burst: 2,4,8,16..ms — each with its own seq.
 			d := 2 * time.Millisecond
 			for j := 0; j < 3; j++ {
+				select {
+				case <-stop:
+					fmt.Printf("send: stopped by signal after %d frames in %s\n", sent, time.Since(start).Round(time.Millisecond))
+					return
+				default:
+				}
 				time.Sleep(d)
 				seq++
-				frame := buildFrame(appid, seq, vid, pcp)
-				sendFrame(fd, frame)
+				sent++
+				frame := buildFrameEt(appid, seq, vid, pcp, et, dstMAC)
+				if err := sock.Send(frame); err != nil {
+					fmt.Fprintf(os.Stderr, "send: %v\n", err)
+					os.Exit(1)
+				}
 				d *= 2
+			}
+			// After a burst, keep the overall event rate: sleep the
+			// remainder of the interval.
+			if !loop {
+				time.Sleep(interval)
 			}
 		} else {
 			time.Sleep(interval)
 		}
 	}
-	fmt.Printf("send: done in %s\n", time.Since(start).Round(time.Millisecond))
+	fmt.Printf("send: done in %s (%d frames)\n", time.Since(start).Round(time.Millisecond), sent)
 }
 
 // recv listens for the appid and reports uniqueness/dupes/latency.
-func recv(ifaceName string, appid uint16, dur time.Duration) {
-	fd, _, err := openSocket(ifaceName)
+// With --loop it keeps listening until Ctrl+C.
+func recv(ifaceName string, appid uint16, dur time.Duration, loop bool) {
+	sock, err := openSocket(ifaceName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open %s: %v\n", ifaceName, err)
 		os.Exit(1)
 	}
-	defer unix.Close(fd)
+	defer sock.Close()
+	sock.SetRecvTimeout(1 * time.Second)
 
-	fmt.Printf("recv: listening on %s for appid 0x%04x for %s\n", ifaceName, appid, dur)
+	fmt.Printf("recv: listening on %s for appid 0x%04x", ifaceName, appid)
+	if loop {
+		fmt.Printf(" (until Ctrl+C)")
+	} else {
+		fmt.Printf(" for %s", dur)
+	}
+	fmt.Println()
 	s := &stats{}
 	buf := make([]byte, 2048)
-	oob := make([]byte, 128)
+	stop := stopChan()
 	deadline := time.Now().Add(dur)
-	for time.Now().Before(deadline) {
-		nr, oobn, _, _, err := unix.Recvmsg(fd, buf, oob, 0)
+	lastReport := time.Now()
+	for {
+		if !loop && time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-stop:
+			s.report("recv")
+			os.Exit(0)
+		default:
+		}
+		nr, err := sock.Recv(buf)
 		if err != nil {
-			if err == unix.EAGAIN || err == unix.EINTR {
-				continue
-			}
 			fmt.Fprintf(os.Stderr, "read: %v\n", err)
 			os.Exit(1)
 		}
-		// Reconstruct the VLAN tag stripped by RX offload so parseFrame
-		// sees vid/pcp as they appear on the wire.
-		nr = restoreVLANTag(buf, nr, oob[:oobn])
+		if nr == 0 {
+			// Poll: report periodically in loop mode.
+			if loop && time.Since(lastReport) > 10*time.Second {
+				fmt.Printf("recv: partial %s\n", s.partial())
+				lastReport = time.Now()
+			}
+			continue
+		}
 		_, seq, txns, vid, pcp, ok := parseFrame(buf[:nr], appid)
 		if !ok {
 			continue
@@ -340,58 +455,25 @@ func recv(ifaceName string, appid uint16, dur time.Duration) {
 	os.Exit(0)
 }
 
-// restoreVLANTag re-inserts the 4-byte 802.1Q header into buf when the
-// frame's VLAN tag was stripped by RX offload and returned as
-// PACKET_AUXDATA ancillary data (oob). Returns the new frame length.
-func restoreVLANTag(buf []byte, n int, oob []byte) int {
-	if len(oob) == 0 {
-		return n
-	}
-	msgs, perr := unix.ParseSocketControlMessage(oob)
-	if perr != nil {
-		return n
-	}
-	for _, m := range msgs {
-		if m.Header.Level != unix.SOL_PACKET || m.Header.Type != unix.PACKET_AUXDATA {
-			continue
-		}
-		if len(m.Data) < 20 {
-			continue
-		}
-		status := binary.LittleEndian.Uint32(m.Data[0:4])
-		if status&unix.TP_STATUS_VLAN_VALID == 0 {
-			continue
-		}
-		tci := binary.LittleEndian.Uint16(m.Data[16:18])
-		tpid := binary.LittleEndian.Uint16(m.Data[18:20])
-		if tpid == 0 {
-			tpid = 0x8100
-		}
-		if n < 12 || len(buf) < n+4 {
-			return n
-		}
-		copy(buf[16:n+4], buf[12:n])
-		buf[12] = byte(tpid >> 8)
-		buf[13] = byte(tpid)
-		buf[14] = byte(tci >> 8)
-		buf[15] = byte(tci)
-		return n + 4
-	}
-	return n
+// partial returns a compact one-line live summary for loop mode.
+func (s *stats) partial() string {
+	return fmt.Sprintf("total=%d unique=%d dupes=%d", s.total, s.unique, s.dupes)
 }
 
 // pingMode sends count frames then listens for them to come back (they
 // must cross the PRP network to the peer and back via the SAN nets).
 func pingMode(ifaceName string, appid uint16, count int, rate float64, vid, pcp int) {
-	fd, _, err := openSocket(ifaceName)
+	sock, err := openSocket(ifaceName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open %s: %v\n", ifaceName, err)
 		os.Exit(1)
 	}
-	defer unix.Close(fd)
+	defer sock.Close()
+	sock.SetRecvTimeout(500 * time.Millisecond)
 
 	fmt.Printf("ping: %d frames @ %.0f Hz, vid=%d pcp=%d\n", count, rate, vid, pcp)
 	s := &stats{}
+	stop := stopChan()
 	done := make(chan struct{})
 	go func() {
 		buf := make([]byte, 2048)
@@ -401,8 +483,11 @@ func pingMode(ifaceName string, appid uint16, count int, rate float64, vid, pcp 
 				return
 			default:
 			}
-			nr, err := unix.Read(fd, buf)
+			nr, err := sock.Recv(buf)
 			if err != nil {
+				continue
+			}
+			if nr == 0 {
 				continue
 			}
 			_, seq, txns, _, _, ok := parseFrame(buf[:nr], appid)
@@ -415,8 +500,13 @@ func pingMode(ifaceName string, appid uint16, count int, rate float64, vid, pcp 
 
 	interval := time.Duration(float64(time.Second) / rate)
 	for i := 0; i < count; i++ {
+		select {
+		case <-stop:
+			break
+		default:
+		}
 		frame := buildFrame(appid, uint32(i+1), vid, pcp)
-		if err := sendFrame(fd, frame); err != nil {
+		if err := sock.Send(frame); err != nil {
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
 			os.Exit(1)
 		}

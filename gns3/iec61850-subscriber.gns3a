@@ -1,0 +1,22 @@
+{
+  "appliance_id": "a8b0c3e2-5b6a-4c9f-8d1e-2f3a4b5c6d7e",
+  "name": "IEC 61850 IED Subscriber",
+  "category": "guest",
+  "description": "IEC 61850 GOOSE/SV traffic subscriber (simulated IED). Listens for the configured APPID on its Ethernet port and reports unique frames, duplicates and round-trip latency to the console. The PRP transparency proof: exactly-once delivery across the redundant network, zero duplicates.",
+  "vendor_name": "Westermo (simulated)",
+  "vendor_url": "https://www.westermo.com",
+  "product_name": "IEC 61850 IED Subscriber",
+  "registry_version": 6,
+  "status": "experimental",
+  "maintainer": "westermo",
+  "maintainer_email": "henrik.envall@westermo.com",
+  "docker": {
+    "adapters": 1,
+    "image": "ghcr.io/grymme/prp-sim:latest",
+    "console_type": "telnet",
+    "environment": "IEC_MODE=subscriber\nIEC_APPID=0x1001\nIEC_ET=goose"
+  },
+  "symbols": {
+    "default": "symbols/iec61850-subscriber.svg"
+  }
+}

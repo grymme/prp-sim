@@ -1,0 +1,22 @@
+{
+  "appliance_id": "b7e9c2d1-4a5f-4b8e-9c0d-1e2f3a4b5c6d",
+  "name": "IEC 61850 IED Publisher",
+  "category": "guest",
+  "description": "IEC 61850 GOOSE/SV traffic publisher (simulated IED). Emits GOOSE (0x88B8) and Sampled Values (0x88BA) frames on its Ethernet port with configurable APPID, rate, VLAN ID and priority, including GOOSE-style retransmission bursts. Use with the Subscriber node or a real IED/substation switch to verify PRP transparency.",
+  "vendor_name": "Westermo (simulated)",
+  "vendor_url": "https://www.westermo.com",
+  "product_name": "IEC 61850 IED Publisher",
+  "registry_version": 6,
+  "status": "experimental",
+  "maintainer": "westermo",
+  "maintainer_email": "henrik.envall@westermo.com",
+  "docker": {
+    "adapters": 1,
+    "image": "ghcr.io/grymme/prp-sim:latest",
+    "console_type": "telnet",
+    "environment": "IEC_MODE=publisher\nIEC_APPID=0x1001\nIEC_RATE=5\nIEC_VID=0\nIEC_PCP=4\nIEC_ET=goose"
+  },
+  "symbols": {
+    "default": "symbols/iec61850-publisher.svg"
+  }
+}

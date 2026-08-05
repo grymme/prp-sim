@@ -22,3 +22,4 @@ Thumbs.db
 
 # GNS3 project files (generated)
 tests/output/
+dist/
