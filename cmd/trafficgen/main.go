@@ -363,6 +363,8 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 		default:
 		}
 		sent++
+		stNum++ // new event: state increments
+		sqNum = 1 // reset retransmission counter
 		frame := buildFrameEt(appid, stNum, sqNum, vid, pcp, et, dstMAC)
 		if err := sock.Send(frame); err != nil {
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
