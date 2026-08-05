@@ -6,21 +6,22 @@ import (
 )
 
 // HSR (High-availability Seamless Redundancy) framing, per IEC 62439-3 and
-// the Linux kernel implementation (net/hsr/hsr_main.h).
+// the Linux kernel implementation (net/hsr/hsr_main.h,
+// include/linux/if_hsr.h).
 //
 // The HSR tag is 6 bytes, inserted after the EtherType — and after any
 // VLAN tag — and before the payload:
 //
-//	+------------+---------------+----------------+----+----+
-//	| Path (4b)  | LSDU size(12b)| sequence nr(16)| ttl| pad|
-//	+------------+---------------+----------------+----+----+
-//	    byte 14-15 (path_and_LSDU_size)   byte 16-17   18  19
+//	+------------+---------------+----------------+-----------------+
+//	| Path (4b)  | LSDU size(12b)| sequence nr(16)| encap proto(16) |
+//	+------------+---------------+----------------+-----------------+
+//	    bytes 0-1                   bytes 2-3        bytes 4-5
 //
 //   - path occupies the 4 most significant bits of the first 16-bit word
 //     (path << 12), LSDU size the low 12 bits (mask 0x0FFF).
-//   - LSDU size = length of the frame excluding the Ethernet header (and
-//     any VLAN tag), i.e. HSR tag (6) + payload.
-//   - ttl/pad bytes are transmitted as zero by the kernel.
+//   - LSDU size = 6 (tag) + payload length.
+//   - encap_proto is the EtherType of the encapsulated frame (the original
+//     frame's EtherType moved into the tag; the tag itself uses 0x892F).
 //
 // The EtherType of the tag is 0x892F.
 
@@ -40,14 +41,15 @@ const (
 // sliced off on decode using the LSDU field.
 //
 // path is the 4-bit PathId (0 in pure HSR; (NetId<<1)|LanId for HSR-PRP).
-func EncodeHSR(payload []byte, path int, seq uint16) []byte {
+// encapProto is the encapsulated EtherType of the original frame.
+func EncodeHSR(payload []byte, path int, seq uint16, encapProto uint16) []byte {
 	lsdu := HSRTagLen + len(payload)
 
 	tag := make([]byte, HSRTagLen)
 	word := (uint16(path&0x0F) << 12) | (uint16(lsdu) & 0x0FFF)
 	binary.BigEndian.PutUint16(tag[0:2], word)
 	binary.BigEndian.PutUint16(tag[2:4], seq)
-	// bytes 4-5 (ttl, pad) are zero.
+	binary.BigEndian.PutUint16(tag[4:6], encapProto)
 
 	out := make([]byte, 2+HSRTagLen+len(payload))
 	binary.BigEndian.PutUint16(out[0:2], HSREtherType)
@@ -58,28 +60,29 @@ func EncodeHSR(payload []byte, path int, seq uint16) []byte {
 
 // DecodeHSR validates and parses a frame carrying an HSR tag. It expects
 // the frame to start with a 14-byte Ethernet header (or 18 with one VLAN
-// tag), followed by the HSR tag, and returns (path, seq, payload, error).
-// The payload is sliced by the LSDU size field, so any trailing wire
-// padding is stripped.
-func DecodeHSR(frame []byte) (path, seq int, payload []byte, err error) {
+// tag), followed by the HSR tag, and returns (path, seq, encapProto,
+// payload, error). The payload is sliced by the LSDU size field, so any
+// trailing wire padding is stripped.
+func DecodeHSR(frame []byte) (path, seq int, encapProto uint16, payload []byte, err error) {
 	off, err := hsrTagOffset(frame)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 	if len(frame) < off+HSRTagLen {
-		return 0, 0, nil, fmt.Errorf("frame too short for HSR tag: %d bytes", len(frame))
+		return 0, 0, 0, nil, fmt.Errorf("frame too short for HSR tag: %d bytes", len(frame))
 	}
 	word := binary.BigEndian.Uint16(frame[off : off+2])
 	path = int(word >> 12)
 	lsdu := int(word & 0x0FFF)
 	seq = int(binary.BigEndian.Uint16(frame[off+2 : off+4]))
+	encapProto = binary.BigEndian.Uint16(frame[off+4 : off+6])
 
 	// LSDU size = tag + payload (kernel definition). It must not exceed
 	// the frame; excess bytes are wire padding.
 	if lsdu < HSRTagLen || off+lsdu > len(frame) {
-		return 0, 0, nil, fmt.Errorf("HSR LSDU size out of range: %d (frame %d)", lsdu, len(frame))
+		return 0, 0, 0, nil, fmt.Errorf("HSR LSDU size out of range: %d (frame %d)", lsdu, len(frame))
 	}
-	return path, seq, frame[off+HSRTagLen : off+lsdu], nil
+	return path, seq, encapProto, frame[off+HSRTagLen : off+lsdu], nil
 }
 
 // IsHSRFrame reports whether the frame carries an HSR tag (EtherType
