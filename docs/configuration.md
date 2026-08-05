@@ -20,7 +20,7 @@ define per-node environment variables.
 | Variable | Config path | Example |
 |----------|-------------|---------|
 | `PRP_CONFIG_PATH` | (config file path) | `/custom/config.yaml` |
-| `PRP_ROLE` | `node.role` | `dan` or `redbox` |
+| `PRP_ROLE` | `node.role` | `redbox` |
 | `PRP_PRP_ID` | `prp.prp_id` | `2` |
 | `PRP_LAN_A_IP` | `interfaces.ipv4.lan_a` | `10.0.0.1/24` |
 | `PRP_LAN_B_IP` | `interfaces.ipv4.lan_b` | `10.0.0.2/24` |
@@ -32,20 +32,16 @@ define per-node environment variables.
 ```yaml
 node:
   name: "string"       # Required: Node name
-  role: "string"       # Required: "redbox" or "dan"
+  role: "string"       # Required: "redbox"
 
 interfaces:
   lan_a: "string"      # Required: LAN A interface name
   lan_b: "string"      # Required: LAN B interface name
-  interlink: "string"  # Optional: Interlink interface (RedBox mode)
+  interlink: "string"  # Required: SAN interface (RedBox mode)
   ipv4:                # Optional: static IPv4 addresses per port (CIDR)
     lan_a: "10.0.0.1/24"      # empty string = unnumbered
     lan_b: "10.0.0.2/24"
     interlink: "10.0.0.3/24"
-
-virtual_iface:
-  name: "string"       # Optional: TAP interface name (default: prp0)
-  mac: "string"        # Optional: "auto" (default) or explicit MAC
 
 prp:
   prp_id: integer      # PRP network ID; 0 = auto-derive from hostname
@@ -76,7 +72,7 @@ interlink:
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Human-readable node name. Appears in supervision frames and logs. |
-| `role` | string | Yes | — | Operating mode. `redbox` bridges SAN traffic to PRP LANs. `dan` provides PRP access to applications via `prp0`. |
+| `role` | string | Yes | `redbox` | Operating mode. `redbox` bridges SAN traffic to PRP LANs. |
 
 ### interfaces
 
@@ -84,23 +80,16 @@ interlink:
 |-----------|------|----------|---------|-------------|
 | `lan_a` | string | Yes | — | Network interface connected to PRP LAN A. Used for raw socket binding. |
 | `lan_b` | string | Yes | — | Network interface connected to PRP LAN B. Used for raw socket binding. |
-| `interlink` | string | No | — | Network interface for SAN/management traffic. Required for RedBox mode. Ignored in DAN mode. |
+| `interlink` | string | Yes | — | Network interface for SAN traffic. The RedBox bridges frames between this port and the two PRP LANs. |
 | `ipv4.lan_a` | string | No | `""` | Optional static IPv4 address (CIDR) for LAN A. IPv4 only. |
 | `ipv4.lan_b` | string | No | `""` | Optional static IPv4 address (CIDR) for LAN B. |
 | `ipv4.interlink` | string | No | `""` | Optional static IPv4 address (CIDR) for the interlink. |
 
 > **Note on IPs**: prpd is a Layer-2 bridge and never looks at IP
-> addresses. Static IPs are purely a convenience (management access, DAN
-> application traffic, pinging nodes in a topology). They are applied at
-> startup via the `SIOCSIFADDR` ioctls — no `ip` binary needed. IPv6 can
-> be configured manually inside the container.
-
-### virtual_iface
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `name` | string | No | `prp0` | Name of the TAP interface created by `prpd`. Applications bind to this interface in DAN mode. |
-| `mac` | string | No | `auto` | MAC for the TAP interface. `auto` copies the MAC of `lan_a` (the kernel HSR/PRP behaviour — required for unicast delivery in DAN mode). An explicit MAC must be unique on the network. |
+> addresses. Static IPs are purely a convenience (management access,
+> pinging nodes in a topology). They are applied at startup via the
+> `SIOCSIFADDR` ioctls — no `ip` binary needed. IPv6 can be configured
+> manually inside the container.
 
 ### prp
 
@@ -129,7 +118,7 @@ interlink:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `first_octet` | string | No | `""` | Destination-MAC byte prefix allowed when forwarding multicast (LAN → interlink with `forward_all=false`, or LAN → `prp0` in DAN mode). Hex bytes, e.g. `"01"`, `"01-00-5E"` (IPv4 multicast), `"33-33"` (IPv6). Empty = allow all. Malformed values are rejected at startup. |
+| `first_octet` | string | No | `""` | Destination-MAC byte prefix allowed when forwarding multicast from the LANs to the interlink with `forward_all=false`. Hex bytes, e.g. `"01"`, `"01-00-5E"` (IPv4 multicast), `"33-33"` (IPv6). Empty = allow all. Malformed values are rejected at startup. |
 
 ### interlink
 
@@ -154,35 +143,6 @@ interfaces:
 
 prp:
   prp_id: 0
-```
-
-### Full DAN Configuration
-
-```yaml
-node:
-  name: "plc-1"
-  role: dan
-
-interfaces:
-  lan_a: eth0
-  lan_b: eth1
-  ipv4:
-    lan_a: "10.0.0.10/24"   # management / application IP
-
-virtual_iface:
-  name: prp0
-  mac: "auto"                # inherits eth0's MAC (required for unicast)
-
-prp:
-  prp_id: 0
-
-supervision:
-  enabled: true
-  life_check_interval: 2s
-
-duplicate_detection:
-  entry_forget_time: 640ms
-  max_node_table_size: 256
 ```
 
 ### RedBox with static IPs and multicast filtering
@@ -212,12 +172,12 @@ interlink:
 
 ## Validation Rules
 
-- `role` must be `redbox` or `dan`
+- `role` must be `redbox`
 - `prp_id` must be 0 (auto-derive) or a positive integer
 - Static IPs must be valid IPv4 CIDR notation (IPv6 rejected)
 - `multicast_filter.first_octet` must be 1-6 hex bytes (e.g. `"01-00-5E"`)
 - Interfaces must exist on the system (validated at startup)
-- If `role=redbox`, an `interlink` interface is expected
+- An `interlink` interface is required
 
 ## Troubleshooting Configuration
 

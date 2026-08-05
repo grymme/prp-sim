@@ -27,12 +27,6 @@ func main() {
 
 	fmt.Printf("prpd: role=%s name=%s prp_id=%d\n", cfg.Node.Role, cfg.Node.Name, cfg.PRP.PRPID)
 
-	// Determine TAP name (default: prp0)
-	tapName := cfg.VirtualIface.Name
-	if tapName == "" {
-		tapName = "prp0"
-	}
-
 	// Build PRP configuration
 	prpCfg := &prp.Config{
 		NodeName:            cfg.Node.Name,
@@ -40,8 +34,6 @@ func main() {
 		LanAInterface:       cfg.Interfaces.LanA,
 		LanBInterface:       cfg.Interfaces.LanB,
 		InterlinkInterface:  cfg.Interfaces.Interlink,
-		TapName:             tapName,
-		TapMAC:              cfg.VirtualIface.MAC,
 		PRPID:               cfg.PRP.PRPID,
 		TrailerEnabled:      cfg.PRP.TrailerEnabled,
 		Debug:               os.Getenv("DEBUG_FRAMES") == "1",
@@ -66,8 +58,8 @@ func main() {
 
 	// Apply optional static IPv4 addresses from the config (interfaces.ipv4)
 	// or the PRP_*_IP environment variables. The PRP engine itself is
-	// Layer-2, so this is purely for convenience (management access, DAN
-	// application traffic, debugging). Failures are logged but do not stop
+	// Layer-2, so this is purely for convenience (management access,
+	// debugging). Failures are logged but do not stop
 	// the node.
 	applyStaticIPs(cfg)
 
@@ -113,8 +105,8 @@ func main() {
 
 // applyStaticIPs assigns the optional per-port IPv4 addresses from the
 // configuration. The PRP engine forwards Ethernet frames and never looks at
-// IPs, so this is a convenience feature: give the node management or DAN
-// application connectivity without hand-running ip(8) in every container.
+// IPs, so this is a convenience feature: give the node management
+// connectivity without hand-running ip(8) in every container.
 func applyStaticIPs(cfg *config.Config) {
 	for _, p := range []struct {
 		port string

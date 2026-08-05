@@ -2,7 +2,7 @@
   "appliance_id": "c3d8e4f0-8b1a-4f2c-a123-456789abcdef",
   "name": "PRP Node",
   "category": "guest",
-  "description": "PRP (IEC 62439-3) RedBox/DAN simulation node for GNS3",
+  "description": "PRP (IEC 62439-3) RedBox simulation node for GNS3",
   "vendor_name": "Westermo (simulated)",
   "vendor_url": "https://www.westermo.com",
   "product_name": "PRP Simulation Container",

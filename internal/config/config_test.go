@@ -111,7 +111,7 @@ func TestEnvIPOverrides(t *testing.T) {
 
 	path := writeTempConfig(t, `
 node:
-  role: dan
+  role: redbox
 interfaces:
   lan_a: eth0
   lan_b: eth1
@@ -131,7 +131,7 @@ func TestEnvInvalidIP(t *testing.T) {
 
 	path := writeTempConfig(t, `
 node:
-  role: dan
+  role: redbox
 interfaces:
   lan_a: eth0
   lan_b: eth1

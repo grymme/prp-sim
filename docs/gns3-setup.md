@@ -12,8 +12,8 @@
 
 The `.gns3a` appliance file automates the entire setup.
 
-> **Privileged mode is required.** prpd binds raw sockets (`CAP_NET_RAW`),
-> creates a TAP device (`/dev/net/tun`) and changes interface MTUs, so the
+> **Privileged mode is required.** prpd binds raw sockets (`CAP_NET_RAW`)
+> and changes interface MTUs, so the
 > container must run privileged. The appliance schema cannot set this for
 > you — do it once after import (see Step 3).
 
@@ -91,7 +91,7 @@ docker pull ghcr.io/grymme/prp-sim:latest
 5. Click **OK**
 
 > For manually created templates also tick **Privileged mode** in the
-> same dialog — the raw-socket/TAP setup requires it.
+> same dialog — the raw-socket setup requires it.
 
 ## Using the PRP Node
 
@@ -116,10 +116,10 @@ This container simulates PRP only (no HSR). Both LAN A and LAN B are independent
            |                                           |
            |                                           |
     +------+------+     +-----------+     +-----+------+
-    |   DAN 1     |     |  RedBox   |     |   RedBox 2 |
-    | A-port +    |     | A-port +  |     | A-port +   |
-    | B-port      |     | B-port +  |     | B-port     |
-    +------+------+     |  SAN link |     +-----+------+
+    |  SAN A     |     |  RedBox   |     |   RedBox 2 |
+    | (device)   |     | A-port +  |     | A-port +   |
+    +------+------+     | B-port +  |     | B-port     |
+           |            |  SAN link |     +-----+------+
            |            +-----+-----+           |
            |                  |                 |
            |                  +-SAN-            |
@@ -138,7 +138,7 @@ Each node has two independent connections:
 Both LANs operate in parallel. If LAN A fails, traffic continues uninterrupted on LAN B.
 
 - A **RedBox** bridges a SAN (via `eth2` interlink) into both PRP LANs.
-- A **DAN** talks to LAN A and LAN B directly via its two interfaces. Applications use the `prp0` TAP inside the container.
+- SAN devices (hosts, IEDs) connect to the interlink port.
 ### Connection Guide
 
 | Node Interface | Connect To | Cable Type |
@@ -164,7 +164,6 @@ You should see:
 ```
 prpd: role=redbox name=prp-redbox-1 prp_id=1
 prp: bound to eth0 (index 3, MTU 1506)
-prp: TAP interface prp0 created
 prp: set MTU 1506 on eth0 and eth1 (RCT overhead)
 prp: bound to eth1 (index 4, MTU 1506)
 prp: bound to interlink eth2 (index 5, MTU 1506)
@@ -184,7 +183,7 @@ In GNS3, right-click the node → **Configure**:
 1. Go to **General settings**
 2. In **Environment variables**, add one per line, for example:
    ```
-   PRP_ROLE=dan
+   PRP_ROLE=redbox
    PRP_PRP_ID=2
    PRP_LAN_A_IP=10.0.0.10/24
    PRP_INTERLINK_IP=192.168.1.5/24

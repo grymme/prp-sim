@@ -183,32 +183,6 @@ func TestSupervisionConsumed(t *testing.T) {
 	}
 }
 
-// TestDANModeForwarding: in DAN mode, frames from LANs are written to the
-// TAP interface after RCT stripping.
-func TestDANModeForwarding(t *testing.T) {
-	lanA := &memPort{name: "lan_a"}
-	lanB := &memPort{name: "lan_b"}
-	tap := &memPort{name: "tap"}
-	n := NewNode(&Config{Role: "dan", TrailerEnabled: true})
-	n.LanA = lanA
-	n.LanB = lanB
-	n.Tap = tap
-	n.dupTable.Cleanup()
-
-	// Unique src MAC: the node table is a package-level singleton and
-	// Cleanup() only removes expired entries.
-	frame2 := ethFrame([6]byte{0x0a, 0xbb, 0xcc, 0xdd, 0xee, 0xff}, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
-	enc := engine.EncodeRCT(frame2, 0, 0)
-
-	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
-	if len(tap.frames) != 1 {
-		t.Fatalf("expected 1 frame on TAP, got %d", len(tap.frames))
-	}
-	if !bytes.Equal(tap.frames[0], frame2) {
-		t.Error("TAP frame should equal the original untagged frame")
-	}
-}
-
 // TestProxyLearning verifies that with ForwardAll=false, LAN frames are only
 // forwarded to the interlink after the SAN has been learned.
 func TestProxyLearning(t *testing.T) {
@@ -425,38 +399,6 @@ func TestSupervisionOnInterlinkIsData(t *testing.T) {
 	}
 	if len(n.supervisionSeen) != 0 {
 		t.Fatal("0x88fb on interlink must not be parsed as supervision")
-	}
-}
-
-// TestDANUnicastFilter verifies DAN mode only delivers unicast frames
-// addressed to the node's own MAC.
-func TestDANUnicastFilter(t *testing.T) {
-	lanA := &memPort{name: "lan_a"}
-	lanB := &memPort{name: "lan_b"}
-	tap := &memPort{name: "tap"}
-	n := NewNode(&Config{Role: "dan", TrailerEnabled: true})
-	n.LanA = lanA
-	n.LanB = lanB
-	n.Tap = tap
-	n.SetNodeMAC([]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x99})
-	n.dupTable.Cleanup()
-
-	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
-
-	// Unicast to someone else: dropped.
-	other := ethFrame(src, [6]byte{0x10, 0x22, 0x33, 0x44, 0x55, 0x66})
-	enc := engine.EncodeRCT(other, 0, 0)
-	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
-	if len(tap.frames) != 0 {
-		t.Fatalf("unicast to other MAC should be dropped, got %d", len(tap.frames))
-	}
-
-	// Unicast to our MAC: delivered.
-	mine := ethFrame(src, [6]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x99})
-	enc = engine.EncodeRCT(mine, 1, 0)
-	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
-	if len(tap.frames) != 1 {
-		t.Fatalf("unicast to own MAC should be delivered, got %d", len(tap.frames))
 	}
 }
 

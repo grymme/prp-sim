@@ -312,12 +312,6 @@ docker run --rm --privileged \
   --network prp-sim-bridge \
   ghcr.io/grymme/prp-sim:latest \
   ip link show
-
-# Test TAP interface
-docker run --rm --privileged \
-  --network prp-sim-bridge \
-  ghcr.io/grymme/prp-sim:latest \
-  ip tuntap add dev prp0 mode tap && ip link show prp0
 ```
 
 ## Error Messages
@@ -347,7 +341,7 @@ python3 -c "import yaml; yaml.safe_load(open('config.yaml'))"
 # Fix syntax errors (indentation, quotes, etc.)
 ```
 
-### "error: invalid role: xxx (must be redbox or dan)"
+### "error: invalid role: xxx (must be redbox)"
 
 **Cause**: Invalid role in config.
 
@@ -355,7 +349,7 @@ python3 -c "import yaml; yaml.safe_load(open('config.yaml'))"
 ```yaml
 # Use valid role
 node:
-  role: redbox  # or dan
+  role: redbox
 ```
 
 ### "error: lan_a and lan_b interfaces must be specified"
@@ -370,18 +364,14 @@ interfaces:
   lan_b: eth1
 ```
 
-### "tap: failed to create interface"
+### "error: bind LAN A (eth0): operation not permitted"
 
-**Cause**: Missing TUN/TAP device or permissions.
+**Cause**: Missing `CAP_NET_RAW` / privileged mode.
 
 **Solution**:
 ```bash
-# Check if TUN/TAP exists
-ls -la /dev/net/tun
-
-# Create if missing (requires root)
-sudo mkdir -p /dev/net
-sudo mknod /dev/net/tun c 10 200
+# Run the container privileged, or add the capability
+docker run --privileged ...
 ```
 
 ### "raw: failed to bind eth0"

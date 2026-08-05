@@ -34,7 +34,6 @@ type Node struct {
 	LanA              iface.PacketPort
 	LanB              iface.PacketPort
 	Interlink         iface.PacketPort
-	Tap               iface.PacketPort
 	mac               []byte
 	supSeq            uint16
 	seqMgr            *engine.SequenceManager
@@ -64,8 +63,6 @@ type Config struct {
 	LanAInterface      string
 	LanBInterface      string
 	InterlinkInterface string
-	TapName            string
-	TapMAC             string
 	PRPID              int
 	TrailerEnabled     bool
 	Debug              bool
@@ -94,7 +91,7 @@ type Config struct {
 }
 
 type frameEvent struct {
-	iface   string // "lan_a", "lan_b", "tap", "interlink"
+	iface   string // "lan_a", "lan_b", "interlink"
 	frame   []byte
 	frameSz int
 }
@@ -149,8 +146,8 @@ func randSeqStart() uint16 {
 // Start initializes interfaces and starts the main processing loops.
 func (n *Node) Start() error {
 	// Bind raw socket to LAN A first: its hardware address is the node
-	// identity (used for the TAP MAC and for the unicast destination
-	// filter in DAN mode).
+	// identity (used as the RedBox identity and for the unicast
+	// destination filter).
 	lanA, err := iface.CreateRawSocket(n.Config.LanAInterface)
 	if err != nil {
 		return fmt.Errorf("bind LAN A (%s): %w", n.Config.LanAInterface, err)
@@ -158,21 +155,9 @@ func (n *Node) Start() error {
 	n.LanA = lanA
 	log.Printf("prp: bound to %s (index %d, MTU %d)", lanA.Name(), lanA.IfIndex(), lanA.MTU())
 
-	// Create TAP interface (for DAN mode, but also useful in RedBox).
-	if n.Config.TapName != "" {
-		tap, err := iface.CreateTAP(n.Config.TapName, n.tapMAC())
-		if err != nil {
-			n.closePorts()
-			return fmt.Errorf("create TAP: %w", err)
-		}
-		n.Tap = tap
-		log.Printf("prp: TAP interface %s created", tap.Name())
-	}
-
 	// The node MAC is the MAC of the LAN A interface (real hardware MAC,
 	// unique per node — never derived from the PRP ID, which is shared by
-	// all nodes in the same PRP network). An explicitly configured
-	// virtual_iface.mac overrides it.
+	// all nodes in the same PRP network).
 	n.mac = n.nodeMAC()
 
 	// Raise the MTU of both PRP LAN ports so a full-size SAN frame
@@ -228,10 +213,6 @@ func (n *Node) Start() error {
 		go n.readLoop(n.Interlink, "interlink")
 	}
 
-	if n.Tap != nil {
-		go n.tapReadLoop()
-	}
-
 	go n.processFrames()
 
 	log.Printf("prp: node %s started in %s mode", n.Config.NodeName, n.Config.Role)
@@ -241,9 +222,6 @@ func (n *Node) Start() error {
 // closePorts closes every bound port (used on startup failure so no
 // interfaces are left half-configured).
 func (n *Node) closePorts() {
-	if n.Tap != nil {
-		n.Tap.Close()
-	}
 	if n.LanA != nil {
 		n.LanA.Close()
 	}
@@ -272,9 +250,6 @@ func (n *Node) Stop() {
 		n.cleanupTimer.Stop()
 	}
 
-	if n.Tap != nil {
-		n.Tap.Close()
-	}
 	if n.LanA != nil {
 		n.LanA.Close()
 	}
@@ -347,39 +322,6 @@ func (n *Node) readLoop(rs iface.PacketPort, ifaceName string) {
 	}
 }
 
-// tapReadLoop reads frames from the TAP interface.
-func (n *Node) tapReadLoop() {
-	buf := make([]byte, 2048+512)
-
-	for {
-		select {
-		case <-n.stopChan:
-			return
-		default:
-		}
-
-		nr, err := n.Tap.Read(buf)
-		if err != nil {
-			log.Printf("prp: TAP read error: %v", err)
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-
-		frame := make([]byte, nr)
-		copy(frame, buf[:nr])
-
-		select {
-		case n.frameBuffer <- frameEvent{
-			iface:   "tap",
-			frame:   frame,
-			frameSz: nr,
-		}:
-		default:
-			log.Printf("prp: frame buffer full, dropping TAP frame")
-		}
-	}
-}
-
 // processFrames is the main event loop for frame processing.
 func (n *Node) processFrames() {
 	for {
@@ -406,7 +348,7 @@ func (n *Node) handleFrame(event frameEvent) {
 
 	// Handle supervision frames (0x88fb). Only frames received on the PRP
 	// LANs are supervision traffic; a 0x88fb frame arriving on the
-	// interlink or the TAP is ordinary data and must be forwarded like
+	// interlink is ordinary data and must be forwarded like
 	// any other frame.
 	if etherType == 0x88fb && (event.iface == "lan_a" || event.iface == "lan_b") {
 		n.handleSupervisionFrame(event)
@@ -420,14 +362,11 @@ func (n *Node) handleFrame(event frameEvent) {
 	case "interlink":
 		// Incoming from interlink (SAN in RedBox mode) - handle transmit path
 		n.handleInterlinkFrame(event)
-	case "tap":
-		// Incoming from TAP (DAN mode) - handle as application frame
-		n.handleDANFrame(event)
 	}
 }
 
 // handleIncomingPRPFrame processes frames arriving from PRP LANs.
-// Flow: LAN → check RCT → dup detection → strip RCT → forward to interlink/TAP
+// Flow: LAN → check RCT → dup detection → strip RCT → forward to interlink
 func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	if n.Config.Debug {
 		log.Printf("prp: incoming PRP frame on %s (%d bytes)", event.iface, event.frameSz)
@@ -505,18 +444,6 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 		if n.Config.Debug {
 			log.Printf("prp: forwarded frame (%d bytes) to interlink", len(payload))
 		}
-	} else if n.Tap != nil {
-		// DAN: forward to TAP interface, subject to destination filter.
-		if !n.shouldForwardToTap(payload) {
-			if n.Config.Debug {
-				log.Printf("prp: frame from %s not forwarded to TAP (filtered)", srcMAC)
-			}
-			return
-		}
-		_, err := n.Tap.Write(payload)
-		if err != nil {
-			log.Printf("prp: failed to write to TAP: %v", err)
-		}
 	}
 }
 
@@ -557,17 +484,6 @@ func (n *Node) shouldForwardToInterlink(frame []byte) bool {
 		return true
 	}
 	return false
-}
-
-// shouldForwardToTap decides whether a LAN frame is delivered to the TAP
-// interface in DAN mode: only unicast to our MAC, broadcast, or allowed
-// multicast.
-func (n *Node) shouldForwardToTap(frame []byte) bool {
-	if engine.IsMulticastMAC(frame) {
-		return n.multicastAllowed(frame)
-	}
-	// Unicast: deliver only if addressed to this node's MAC.
-	return len(frame) >= 6 && len(n.mac) == 6 && bytes.Equal(n.mac, frame[0:6])
 }
 
 // multicastAllowed applies the configured multicast filter. The pattern is
@@ -685,39 +601,6 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	}
 }
 
-// handleDANFrame processes frames arriving from the TAP interface.
-// In DAN mode, these are application frames that need RCT added before
-// sending to LANs. Both LAN copies carry the same sequence number.
-func (n *Node) handleDANFrame(event frameEvent) {
-	if n.Config.Debug {
-		log.Printf("prp: DAN frame from TAP (%d bytes)", event.frameSz)
-	}
-
-	srcMAC := engine.GetSrcMAC(event.frame)
-
-	if !n.Config.TrailerEnabled {
-		// No RCT - just forward to both LANs
-		n.LanA.Write(event.frame)
-		n.LanB.Write(event.frame)
-		return
-	}
-
-	seq := n.seqMgr.Next(srcMAC)
-	lanAFrame := engine.EncodeRCT(event.frame, seq, 0)
-	lanBFrame := engine.EncodeRCT(event.frame, seq, 1)
-
-	if _, err := n.LanA.Write(lanAFrame); err != nil {
-		log.Printf("prp: failed to write to LAN A: %v", err)
-	}
-	if _, err := n.LanB.Write(lanBFrame); err != nil {
-		log.Printf("prp: failed to write to LAN B: %v", err)
-	}
-
-	if n.Config.Debug {
-		log.Printf("prp: DAN frame duplicated (seq %d) to both LANs", seq)
-	}
-}
-
 // handleSupervisionFrame processes received PRP supervision frames (0x88fb).
 // Supervision frames are consumed locally — a RedBox must NOT forward them
 // to the interlink (SAN) as data traffic.
@@ -782,37 +665,13 @@ func (n *Node) SendSupervisionFrame() {
 	}
 }
 
-// tapMAC decides the MAC address for the TAP interface. An explicitly
-// configured virtual_iface.mac wins; "auto" (the default) copies the LAN A
-// interface MAC, matching the Linux kernel's HSR/PRP behaviour where the
-// virtual interface inherits the slave's address. This is what makes
-// DAN-mode unicast delivery work: receivers address frames to the MAC the
-// peer advertises, and the node's unicast filter compares against the same
-// address.
-func (n *Node) tapMAC() string {
-	if mac := n.Config.TapMAC; mac != "" && mac != "auto" {
-		return mac
-	}
-	if ifc, err := net.InterfaceByName(n.Config.LanAInterface); err == nil {
-		return ifc.HardwareAddr.String()
-	}
-	return "" // let the kernel pick (only possible without a real LAN A)
-}
-
 // nodeMAC returns the node's MAC address. It must never be derived from
 // the PRP ID — all nodes in a PRP network share the PRP ID, which would
-// cause MAC collisions. Precedence: explicit virtual_iface.mac, then the
-// LAN A interface hardware address, then any MAC set programmatically
+// cause MAC collisions. Precedence: the LAN A interface hardware address,
+// then any MAC set programmatically
 // (tests), then a synthetic locally-administered MAC derived from the PRP
 // ID as a last resort.
 func (n *Node) nodeMAC() []byte {
-	// An explicit TAP MAC is the node identity the rest of the network
-	// addresses frames to.
-	if mac := n.Config.TapMAC; mac != "" && mac != "auto" {
-		if hw, err := net.ParseMAC(mac); err == nil {
-			return hw
-		}
-	}
 	// Use the LAN A interface hardware address when bound to a real
 	// interface.
 	if n.Config.LanAInterface != "" && n.mac == nil {

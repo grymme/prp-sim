@@ -8,10 +8,6 @@ interfaces:
   lan_b: eth1
   interlink: eth2
 
-virtual_iface:
-  name: prp0
-  mac: "auto"
-
 prp:
   prp_id: 1
   trailer_enabled: true

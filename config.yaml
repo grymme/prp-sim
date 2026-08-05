@@ -8,7 +8,7 @@
 #
 # Environment-variable overrides (take precedence over this file):
 #   PRP_CONFIG_PATH    path to an alternative config file
-#   PRP_ROLE           "redbox" or "dan"          (overrides node.role)
+#   PRP_ROLE           "redbox"                       (overrides node.role)
 #   PRP_PRP_ID         1-65535                    (overrides prp.prp_id)
 #   PRP_LAN_A_IP       CIDR, e.g. "10.0.0.1/24"   (overrides interfaces.ipv4.lan_a)
 #   PRP_LAN_B_IP       CIDR, e.g. "10.0.0.2/24"   (overrides interfaces.ipv4.lan_b)
@@ -20,7 +20,7 @@
 # ============================================================================
 
 node:
-  # Human-readable name. Appears in logs and (for DAN mode) in the
+  # Human-readable name. Appears in logs and in the
   # supervision frames. If empty, the container hostname is used.
   name: "prp-redbox-1"
 
@@ -29,8 +29,6 @@ node:
   #            LANs. Frames from the interlink are duplicated onto LAN A
   #            and LAN B with RCT trailers; frames from the LANs are
   #            de-duplicated and forwarded to the interlink.
-  #   dan    — a "dual attached node": applications talk to prp0 (TAP) and
-  #            prpd adds the RCT trailer and duplicates onto both LANs.
   role: redbox
 
 interfaces:
@@ -42,8 +40,7 @@ interfaces:
 
   # Optional static IPv4 addresses, one per port, in CIDR notation.
   # The PRP engine itself is Layer-2 and never looks at IP addresses —
-  # this is a convenience so the node can be pinged/SSH'd or so DAN
-  # applications have an IP on the prp0 endpoint without running
+  # this is a convenience so the node can be pinged/SSH'd without running
   # `ip addr add` by hand.
   #
   # Examples:
@@ -56,21 +53,6 @@ interfaces:
     lan_a: ""
     lan_b: ""
     interlink: ""
-
-virtual_iface:
-  # TAP interface created by prpd. In DAN mode this is where your
-  # application binds (it behaves like a normal Ethernet NIC); in redbox
-  # mode it is still created and can be used for local management.
-  name: prp0
-
-  # MAC address of the TAP interface.
-  #   auto   (default) — copy the MAC of the LAN A port. This is the
-  #          correct behaviour for DAN nodes: the network addresses frames
-  #          to this MAC and prpd's unicast filter matches it, so unicast
-  #          actually gets delivered to prp0.
-  #   explicit MAC      — e.g. "02:42:ac:1a:00:01". Use only if you need a
-  #          fixed identity across restarts; make sure it is unique.
-  mac: "auto"
 
 prp:
   # PRP network identifier. All nodes that should form one redundancy
@@ -116,7 +98,7 @@ duplicate_detection:
 
 multicast_filter:
   # Optional filter for multicast frames forwarded from the LANs to the
-  # interlink (redbox mode, forward_all=false) or to prp0 (dan mode).
+  # interlink (redbox mode, forward_all=false).
   # The value is the destination-MAC byte prefix to allow, written as hex
   # bytes. Anything not matching the prefix is dropped.
   #

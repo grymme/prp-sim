@@ -35,11 +35,6 @@ type Config struct {
 		} `yaml:"ipv4"`
 	} `yaml:"interfaces"`
 
-	VirtualIface struct {
-		Name string `yaml:"name"`
-		MAC  string `yaml:"mac"`
-	} `yaml:"virtual_iface"`
-
 	PRP struct {
 		PRPID          int  `yaml:"prp_id"`
 		TrailerEnabled bool `yaml:"trailer_enabled"`
@@ -80,8 +75,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	if c.Node.Role != "redbox" && c.Node.Role != "dan" {
-		return nil, fmt.Errorf("invalid role: %s (must be redbox or dan)", c.Node.Role)
+	if c.Node.Role != "redbox" {
+		return nil, fmt.Errorf("invalid role: %s (must be redbox)", c.Node.Role)
 	}
 
 	if c.Interfaces.LanA == "" || c.Interfaces.LanB == "" {
@@ -125,8 +120,8 @@ func Load(path string) (*Config, error) {
 
 	// Apply environment variable overrides
 	if role := os.Getenv("PRP_ROLE"); role != "" {
-		if role != "redbox" && role != "dan" {
-			return nil, fmt.Errorf("invalid PRP_ROLE: %s (must be redbox or dan)", role)
+		if role != "redbox" {
+			return nil, fmt.Errorf("invalid PRP_ROLE: %s (must be redbox)", role)
 		}
 		c.Node.Role = role
 	}

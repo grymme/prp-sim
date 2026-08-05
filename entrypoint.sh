@@ -3,8 +3,9 @@
 #
 # Two personalities, selected by the IEC_MODE environment variable:
 #
-#   (unset / empty)  — PRP node: telnetd + prpd (RedBox or DAN depending
-#                      on PRP_ROLE). This is the original behaviour.
+#   (unset / empty)  — PRP node: telnetd + prpd (RedBox
+#                      depending on PRP_ROLE). This is the original
+#                      behaviour.
 #   IEC_MODE=publisher  — IEC 61850 IED: telnetd + trafficgen publishing
 #                      GOOSE/SV frames on eth0 (--loop, so it runs until
 #                      the container stops).

@@ -1,11 +1,11 @@
 # PRP GNS3 Simulation Container
 
-A userspace implementation of the **Parallel Redundancy Protocol (PRP, IEC 62439-3)** for use in GNS3 network simulations. Simulates a Westermo-compatible RedBox or DAN node for testing and learning PRP redundancy.
+A userspace implementation of the **Parallel Redundancy Protocol (PRP, IEC 62439-3)** for use in GNS3 network simulations. Simulates a Westermo-compatible **RedBox** node for testing and learning PRP redundancy.
 
 ## Features
 
 - Full IEC 62439-3 compliance (6-byte RCT trailer, duplicate detection, supervision frames)
-- **Dual mode**: RedBox (SAN bridging) or DAN (application node)
+- **RedBox mode**: bridges a SAN (interlink) port onto both PRP LANs
 - Configurable via YAML file
 - GNS3 integration via `.gns3a` appliance
 - Lightweight Docker image (~13MB)
@@ -53,15 +53,14 @@ Right-click → Start. The container pulls the image automatically on first use.
 │                      │                │  │
 │   eth2 (Interlink) ──┤  • RCT         │  │
 │                      │  • Dup detect  │  │
-│   prp0 (TAP, L2) ◀───┤  • Node table  │  │
+│                      │  • Node table  │  │
 │                      │  • Supervision │  │
 │                      └────────────────┘  │
 └──────────────────────────────────────────┘
 ```
 
 **Mode behavior:**
-- **RedBox**: Bridges Interlink traffic to both PRP LANs, adding/stripping RCT trailers
-- **DAN**: Application traffic through `prp0` interface, transparent PRP handling
+- **RedBox**: Bridges Interlink (SAN) traffic to both PRP LANs, adding/stripping RCT trailers and deduplicating on receive
 
 ## Configuration
 
@@ -72,7 +71,7 @@ The container reads `/etc/prp/config.yaml` by default. Override via:
 docker run -v /path/to/config.yaml:/etc/prp/config.yaml ...
 
 # Or use environment variables (per-node in GNS3)
-docker run -e PRP_ROLE=dan -e PRP_PRP_ID=2 -e PRP_LAN_A_IP=10.0.0.10/24 ...
+docker run -e PRP_ROLE=redbox -e PRP_PRP_ID=2 -e PRP_LAN_A_IP=10.0.0.10/24 ...
 ```
 
 ### Configuration Reference
@@ -84,7 +83,7 @@ documented inline. Environment variables: `PRP_ROLE`, `PRP_PRP_ID`,
 ```yaml
 node:
   name: "prp-redbox-1"    # Node name (appears in supervision)
-  role: redbox             # redbox | dan
+  role: redbox             # redbox
 
 interfaces:
   lan_a: eth0              # PRP LAN A
@@ -94,10 +93,6 @@ interfaces:
     lan_a: ""
     lan_b: ""
     interlink: ""
-
-virtual_iface:
-  name: prp0               # TAP interface for DAN mode
-  mac: "auto"              # Auto (inherits eth0 MAC) or explicit MAC
 
 prp:
   prp_id: 0                # 0 = auto-derive unique ID from container hostname
@@ -154,7 +149,7 @@ docker run --rm --privileged \
 ```bash
 docker run --rm --privileged \
   --network prp-sim-bridge \
-  -e PRP_ROLE=dan \
+  -e PRP_ROLE=redbox \
   -e PRP_PRP_ID=2 \
   -e PRP_LAN_A_IP=10.0.0.10/24 \
   ghcr.io/grymme/prp-sim:latest
@@ -228,7 +223,7 @@ See [docs/gns3-setup.md](docs/gns3-setup.md) for detailed setup instructions.
 cmd/prpd/                  — daemon entrypoint
 internal/config/           — YAML config parser
 internal/engine/           — RCT encode/decode
-internal/prp/              — PRP node (RedBox/DAN) logic
+internal/prp/              — PRP node (RedBox) logic
 internal/iface/            — raw sockets, TAP, interface ioctls
 internal/nodetable/        — duplicate detection
 internal/supervision/      — 0x88fb supervision frames

@@ -4,14 +4,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// PacketPort is the interface implemented by RawSocket and TAPSocket.
+// PacketPort is the interface implemented by RawSocket.
 // It allows injecting in-memory ports into the PRP node for testing.
 type PacketPort interface {
 	Read([]byte) (int, error)
@@ -221,98 +220,6 @@ func getInterfaceMTU(name string) (int, error) {
 		return 0, err
 	}
 	return iface.MTU, nil
-}
-
-// TAPSocket wraps a TAP interface file descriptor.
-type TAPSocket struct {
-	name string
-	fd   int
-	file *os.File
-}
-
-// CreateTAP creates a TAP (Layer 2) interface.
-func CreateTAP(name string, mac string) (*TAPSocket, error) {
-	if err := ensureTunModule(); err != nil {
-		return nil, fmt.Errorf("ensure tun module: %w", err)
-	}
-
-	file, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
-	}
-
-	// TUNSETIFF copies a full struct ifreq (40 bytes) from userspace and
-	// reads ifr_flags at offset 16. Passing a raw 16-byte name buffer with
-	// flags at offset 14 lets the kernel read uninitialized stack memory,
-	// so the first attempt fails with EINVAL and later ones may randomly
-	// succeed. Use unix.IoctlIfreq which manages the full layout.
-	ifr, err := unix.NewIfreq(name)
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("ifreq(%s): %w", name, err)
-	}
-	ifr.SetUint16(uint16(unix.IFF_TAP | unix.IFF_NO_PI))
-
-	if err := unix.IoctlIfreq(int(file.Fd()), unix.TUNSETIFF, ifr); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("TUNSETIFF: %w", err)
-	}
-
-	// Read back the actual interface name.
-	actualName := ifr.Name()
-
-	if mac != "" && mac != "auto" {
-		if err := setInterfaceMAC(actualName, mac); err != nil {
-			file.Close()
-			return nil, fmt.Errorf("set MAC: %w", err)
-		}
-	}
-
-	if err := SetInterfaceUp(actualName); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("set interface up: %w", err)
-	}
-
-	// TAP interface up and running
-	return &TAPSocket{
-		name: actualName,
-		fd:   int(file.Fd()),
-		file: file,
-	}, nil
-}
-
-func (t *TAPSocket) Name() string {
-	return t.name
-}
-
-func (t *TAPSocket) Fd() int {
-	return t.fd
-}
-
-func (t *TAPSocket) File() *os.File {
-	return t.file
-}
-
-func (t *TAPSocket) Read(buf []byte) (int, error) {
-	return t.file.Read(buf)
-}
-
-func (t *TAPSocket) Write(frame []byte) (int, error) {
-	return t.file.Write(frame)
-}
-
-func (t *TAPSocket) Close() error {
-	return t.file.Close()
-}
-
-func ensureTunModule() error {
-	if _, err := os.Stat("/dev/net/tun"); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("/dev/net/tun not found - load tun kernel module")
-		}
-		return err
-	}
-	return nil
 }
 
 // SetMTU changes the MTU of a network interface (used to raise the PRP LAN

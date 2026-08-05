@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PRP GNS3 simulation container implements the Parallel Redundancy Protocol (PRP, IEC 62439-3) in userspace. A single Go binary (`prpd`) manages all PRP operations between two physical LAN interfaces and a virtual TAP interface.
+The PRP GNS3 simulation container implements the Parallel Redundancy Protocol (PRP, IEC 62439-3) in userspace. A single Go binary (`prpd`) manages all PRP operations as a RedBox bridging a SAN port between two physical LAN interfaces.
 
 ## Components
 
@@ -10,7 +10,6 @@ The PRP GNS3 simulation container implements the Parallel Redundancy Protocol (P
 
 The main process that:
 - Reads configuration from YAML
-- Creates and manages the TAP interface (`prp0`)
 - Binds raw sockets to physical interfaces
 - Processes frames in both directions
 - Sends supervision frames periodically
@@ -37,11 +36,11 @@ Manages PRP supervision frames (Ethertype `0x88fb`):
 - Advertises node identity and proxy nodes (RedBox mode)
 - Responds to supervision from other nodes
 
-### TAP Manager (`internal/iface/`)
+### Interlink / SAN Manager (`internal/iface/`)
 
-Creates and manages the virtual TAP interface:
-- Uses Linux TUN/TAP driver (`/dev/net/tun`)
-- Configurable MAC address
+Manages the physical interfaces and the SAN (interlink) port:
+- Binds raw sockets for LAN A, LAN B and the interlink
+- Configurable MAC addresses
 - Operates at Layer 2 for transparent Ethernet bridging
 
 ### Config Parser (`internal/config/`)
@@ -81,22 +80,6 @@ Loads and validates YAML configuration:
                     └────────────────────────────────────┘
 ```
 
-### DAN Mode
-
-```
-┌──────────┐     ┌─────────────────────────────────────┐     ┌──────────┐
-│  prp0    │────▶│  App writes frame                   │     │  eth0    │
-│  (TAP)   │     │  → Insert RCT trailer               │────▶│ (LAN A)  │
-└──────────┘     │  → Duplicate to both LANs           │     └──────────┘
-                 └─────────────────────────────────────┘     ┌──────────┐
-                                                             │  eth1    │
-┌──────────┐     ┌─────────────────────────────────────┐     │ (LAN B)  │
-│  prp0    │◀────│  Read from eth0/eth1                │◀────└──────────┘
-│  (TAP)   │     │  → Strip RCT, dup detect            │
-└──────────┘     │  → Write to prp0                    │
-                 └─────────────────────────────────────┘
-```
-
 ## Frame Format
 
 ### Ethernet Frame with PRP RCT
@@ -133,8 +116,7 @@ Note: the suffix is the constant `0x88FB` (the PRP EtherType) — this is how a 
 |-----------|------|---------|
 | `eth0` | Physical (raw socket) | PRP LAN A |
 | `eth1` | Physical (raw socket) | PRP LAN B |
-| `eth2` | Physical (raw socket) | Interlink / SAN / Management |
-| `prp0` | Virtual (TAP) | Application interface (DAN mode) |
+| `eth2` | Physical (raw socket) | Interlink / SAN |
 
 ## Error Handling
 
@@ -147,4 +129,4 @@ Note: the suffix is the constant `0x88FB` (the PRP EtherType) — this is how a 
 
 - **Userspace overhead**: ~5-10% CPU penalty vs kernel PRP (acceptable for simulation)
 - **Memory usage**: ~10MB base + node table (256 entries max)
-- **Frame rate**: Limited by raw socket and TAP throughput (~100K pps on modern hardware)
+- **Frame rate**: Limited by raw socket throughput (~100K pps on modern hardware)

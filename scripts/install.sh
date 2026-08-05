@@ -4,7 +4,7 @@
 # Steps:
 #   1. chmod +x install.sh && ./install.sh        (loads the image)
 #   2. In GNS3: File -> Import appliance
-#        - gns3/westermo-prp.gns3a            (RedBox / DAN node)
+#        - gns3/westermo-prp.gns3a            (RedBox node)
 #        - gns3/iec61850-publisher.gns3a      (GOOSE/SV publisher IED)
 #        - gns3/iec61850-subscriber.gns3a     (GOOSE/SV subscriber IED)
 #   3. Build your topology: publisher on SAN-A, RedBoxes in between,
