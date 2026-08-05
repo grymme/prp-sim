@@ -1,0 +1,139 @@
+# HSR-PRP coupling integration topology (dual RedBox):
+#
+#   san-r1 -- hsr-redbox-d (hsr-san)              san-r2 -- hsr-redbox-e (hsr-san)
+#                |                                    |
+#            +---+----------- HSR ring -----------+---+
+#            |                                    |
+#   hsr-prp-a (LanId A)                 hsr-prp-b (LanId B)
+#                | (eth2 = LAN A)                    | (eth2 = LAN B)
+#            [PRP LAN A]                        [PRP LAN B]
+#                |                                    |
+#   san-a -- redbox-a (prp-san)         redbox-b (prp-san) -- san-b
+#
+# The ring is a real HSR ring: only HSR-tagged traffic flows on it. SANs
+# enter the ring through hsr-san RedBoxes (hsr-redbox-d/e); the two
+# hsr-prp RedBoxes couple the ring to PRP LAN A / LAN B with PathId
+# (NetId=1, LanId A/B) and the reinjection check per IEC 62439-3 COR1
+# 5.2.2.3.1. PRP SANs (san-a/san-b) attach via the prp-san RedBoxes.
+#
+# Interface naming inside each RedBox:
+#   eth0 = ring port A, eth1 = ring port B, eth2 = interlink
+
+x-redbox: &redbox
+  image: prp-sim:test
+  privileged: true
+
+services:
+  hsr-redbox-d:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-d.yaml:/etc/prp/config.yaml
+    networks:
+      ring12:
+        interface_name: eth0
+      ring21:
+        interface_name: eth1
+      san-net-r1:
+        interface_name: eth2
+
+  hsr-redbox-e:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-e.yaml:/etc/prp/config.yaml
+    networks:
+      ring12:
+        interface_name: eth0
+      ring21:
+        interface_name: eth1
+      san-net-r2:
+        interface_name: eth2
+
+  hsr-prp-a:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-prp-a.yaml:/etc/prp/config.yaml
+    networks:
+      ring12:
+        interface_name: eth0
+      ring21:
+        interface_name: eth1
+      lan-a:
+        interface_name: eth2
+
+  hsr-prp-b:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-prp-b.yaml:/etc/prp/config.yaml
+    networks:
+      ring12:
+        interface_name: eth0
+      ring21:
+        interface_name: eth1
+      lan-b:
+        interface_name: eth2
+
+  redbox-a:
+    <<: *redbox
+    volumes:
+      - ../../configs/redbox-a.yaml:/etc/prp/config.yaml
+    networks:
+      lan-a:
+        interface_name: eth0
+      lan-b:
+        interface_name: eth1
+      san-net-a:
+        interface_name: eth2
+
+  redbox-b:
+    <<: *redbox
+    volumes:
+      - ../../configs/redbox-b.yaml:/etc/prp/config.yaml
+    networks:
+      lan-a:
+        interface_name: eth0
+      lan-b:
+        interface_name: eth1
+      san-net-b:
+        interface_name: eth2
+
+  san-r1:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.30.0.11/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-r1:
+        interface_name: eth0
+
+  san-r2:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.30.0.13/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-r2:
+        interface_name: eth0
+
+  san-a:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.30.0.12/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-a:
+        interface_name: eth0
+
+  san-b:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.30.0.14/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-b:
+        interface_name: eth0
+
+networks:
+  ring12:
+  ring21:
+  lan-a:
+  lan-b:
+  san-net-r1:
+  san-net-r2:
+  san-net-a:
+  san-net-b:

@@ -159,7 +159,13 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 		if path>>1 != n.NetID() {
 			// Different NetId (pure ring or another coupled network):
 			// forward onto our PRP LAN.
-			n.couplingToPRP(event.frame, payload, seq)
+			original, err := engine.StripHSR(event.frame)
+			if err != nil {
+				n.tracef("HSR strip for coupling failed: %v", err)
+				n.noteDrop("malformed")
+				return
+			}
+			n.couplingToPRP(original, seq)
 			return
 		}
 		if path&1 == n.LanID() {
@@ -248,9 +254,8 @@ func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 // couplingToPRP delivers a ring frame (already decoded: payload = original
 // Ethernet frame) onto the coupled PRP LAN with an RCT trailer, preserving
 // the HSR sequence number end-to-end.
-func (n *Node) couplingToPRP(frame []byte, payload []byte, seq int) {
-	// payload is the original Ethernet frame (dst/src/ethertype/...).
-	rct := engine.EncodeRCT(payload, uint16(seq), n.LanID())
+func (n *Node) couplingToPRP(original []byte, seq int) {
+	rct := engine.EncodeRCT(original, uint16(seq), n.LanID())
 	if _, err := n.Interlink.Write(rct); err != nil {
 		n.tracef("coupling LAN write failed: %v", err)
 	} else {

@@ -1,0 +1,30 @@
+# HSR-PRP coupling RedBox A: HSR ring ports eth0/eth1, interlink eth2
+# attaches to PRP LAN A (NetId 1).
+node:
+  name: "hsr-prp-b"
+  role: hsr-prp
+
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+
+hsr:
+  prp_id: 1
+  lan_id: B
+
+prp:
+  prp_id: 0
+  trailer_enabled: true
+
+supervision:
+  enabled: true
+  life_check_interval: 2s
+
+duplicate_detection:
+  entry_forget_time: 640ms
+  max_node_table_size: 256
+
+interlink:
+  forward_all: true
+  vlan_filter: []

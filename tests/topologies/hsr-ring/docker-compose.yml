@@ -1,0 +1,88 @@
+# HSR ring integration topology (3 RedBoxes, hsr-san):
+#
+#   san-1 -- redbox-a -- ring31 / ring12 -- redbox-b -- san-2
+#              |                                  |
+#              +--- ring12                       +--- ring23
+#                      |                          |
+#                   redbox-c -- san-3
+#
+# Each RedBox bridges its OWN SAN segment onto the HSR ring via HSR-tagged
+# frames on its two ring ports. The three per-link Docker networks form a
+# physical ring; break any one link and traffic still flows the other way
+# around the ring (seamless failover, zero recovery time).
+#
+# Interface naming inside each RedBox:
+#   eth0 = ring port A, eth1 = ring port B, eth2 = SAN (interlink)
+
+x-redbox: &redbox
+  image: prp-sim:test
+  privileged: true
+
+services:
+  redbox-a:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-a.yaml:/etc/prp/config.yaml
+    networks:
+      ring31:
+        interface_name: eth0
+      ring12:
+        interface_name: eth1
+      san-net-1:
+        interface_name: eth2
+
+  redbox-b:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-b.yaml:/etc/prp/config.yaml
+    networks:
+      ring12:
+        interface_name: eth0
+      ring23:
+        interface_name: eth1
+      san-net-2:
+        interface_name: eth2
+
+  redbox-c:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-c.yaml:/etc/prp/config.yaml
+    networks:
+      ring23:
+        interface_name: eth0
+      ring31:
+        interface_name: eth1
+      san-net-3:
+        interface_name: eth2
+
+  san-1:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.11/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-1:
+        interface_name: eth0
+
+  san-2:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.12/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-2:
+        interface_name: eth0
+
+  san-3:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.13/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-3:
+        interface_name: eth0
+
+networks:
+  ring12:
+  ring23:
+  ring31:
+  san-net-1:
+  san-net-2:
+  san-net-3:

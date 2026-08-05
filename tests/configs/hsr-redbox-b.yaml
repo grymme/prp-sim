@@ -1,0 +1,25 @@
+# HSR RedBox A on a 3-node ring: eth0=ring A, eth1=ring B, eth2=SAN.
+node:
+  name: "hsr-redbox-b"
+  role: hsr-san
+
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+
+prp:
+  prp_id: 0
+  trailer_enabled: true
+
+supervision:
+  enabled: true
+  life_check_interval: 2s
+
+duplicate_detection:
+  entry_forget_time: 640ms
+  max_node_table_size: 256
+
+interlink:
+  forward_all: true
+  vlan_filter: []

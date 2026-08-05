@@ -222,8 +222,9 @@ func (n *Node) Start() error {
 	n.LanB = lanB
 	log.Printf("prp: bound to %s (index %d, MTU %d)", lanB.Name(), lanB.IfIndex(), lanB.MTU())
 
-	// Bind interlink (for RedBox mode)
-	if n.Config.Role == "redbox" && n.Config.InterlinkInterface != "" {
+	// Bind the interlink: a SAN port (prp-san, hsr-san), the coupled PRP
+	// LAN (hsr-prp), or the second HSR ring (hsr-hsr).
+	if n.Config.InterlinkInterface != "" {
 		interlink, err := iface.CreateRawSocket(n.Config.InterlinkInterface)
 		if err != nil {
 			n.closePorts()
