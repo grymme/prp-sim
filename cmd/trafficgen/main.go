@@ -45,6 +45,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"prp-gns3/internal/iec"
 )
 
 const (
@@ -58,9 +60,8 @@ const (
 	// SV multicast group (01-0C-CD-04-00-00).
 	mcastSV = 0x010ccd040000
 
-	// payload layout: appid(2) seq(4) txns(8) — 14 bytes of GOOSE-ish
-	// payload after the ethernet header (+optional VLAN).
-	payloadLen = 14
+	// Frame header: APPID(2), Length(2), Reserved(4), then real APDU.
+	payloadHeaderLen = 8
 )
 
 var dstMAC = []byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01}
@@ -71,8 +72,8 @@ type stats struct {
 	unique   int
 	dupes    int
 	latency  []time.Duration
-	lastSeq  uint32
-	lastSeen map[uint32]bool
+	lastKey  string
+	lastSeen map[string]bool
 	// tags records the distinct (vid, pcp) pairs observed on the wire.
 	tags map[int]map[int]int
 }
@@ -90,18 +91,18 @@ func (s *stats) noteTagged(vid, pcp int) {
 	s.tags[vid][pcp]++
 }
 
-func (s *stats) noteFrame(seq uint32, sentAt time.Time) {
+func (s *stats) noteFrame(key string, sentAt time.Time) {
 	s.total++
 	if sentAt.IsZero() {
-		// Unknown tx time (foreign frame) — only count uniqueness.
-		if s.lastSeen[seq] {
+		if s.lastSeen[key] {
 			s.dupes++
 		} else {
 			s.unique++
 			if s.lastSeen == nil {
-				s.lastSeen = make(map[uint32]bool)
+				s.lastSeen = make(map[string]bool)
 			}
-			s.lastSeen[seq] = true
+			s.lastSeen[key] = true
+			s.lastKey = key
 		}
 		return
 	}
@@ -109,15 +110,16 @@ func (s *stats) noteFrame(seq uint32, sentAt time.Time) {
 	if lat > 0 {
 		s.latency = append(s.latency, lat)
 	}
-	if s.lastSeen[seq] {
+	if s.lastSeen[key] {
 		s.dupes++
 		return
 	}
 	if s.lastSeen == nil {
-		s.lastSeen = make(map[uint32]bool)
+		s.lastSeen = make(map[string]bool)
 	}
-	s.lastSeen[seq] = true
+	s.lastSeen[key] = true
 	s.unique++
+	s.lastKey = key
 }
 
 func (s *stats) report(label string) {
@@ -151,77 +153,69 @@ func (s *stats) report(label string) {
 // tagging (PCP 4) — is vid=0, pcp=4: the tag carries QoS priority bits
 // without assigning the frame to any named VLAN, and transit switches use
 // the PCP for hardware queueing.
-func buildFrame(appid uint16, seq uint32, vid, pcp int) []byte {
-	payload := make([]byte, payloadLen)
-	binary.BigEndian.PutUint16(payload[0:2], appid)
-	binary.BigEndian.PutUint32(payload[2:6], seq)
-	binary.BigEndian.PutUint64(payload[6:14], uint64(time.Now().UnixNano()))
-
-	tagged := vid >= 0
-	var frame []byte
-	if tagged {
-		frame = make([]byte, 14+4+payloadLen)
-	} else {
-		frame = make([]byte, 14+payloadLen)
-	}
-	copy(frame[0:6], dstMAC)
-	copy(frame[6:12], srcMAC)
-	if tagged {
-		frame[12], frame[13] = 0x81, 0x00 // 802.1Q
-		tci := uint16(pcp&0x07)<<13 | uint16(vid&0x0FFF)
-		binary.BigEndian.PutUint16(frame[14:16], tci)
-		binary.BigEndian.PutUint16(frame[16:18], etGOOSE)
-		copy(frame[18:18+payloadLen], payload)
-	} else {
-		binary.BigEndian.PutUint16(frame[12:14], etGOOSE)
-		copy(frame[14:14+payloadLen], payload)
-	}
-	return frame
+func buildFrame(appid uint16, stNum uint16, sqNum uint16, vid, pcp int) []byte {
+	et := uint16(etGOOSE)
+	apdu := iec.BuildGOOSEAPDU(stNum, sqNum, time.Now(), false, 1, "LLN0$GO$gcb0", "LLN0$dataset", "LLN0$GO$gcb0")
+	return assembleFrame(appid, apdu, vid, pcp, et)
 }
 
 // buildFrameEt is buildFrame with a configurable EtherType (GOOSE 0x88B8
 // or SV 0x88BA) and destination MAC, so the same tool generates Sampled
 // Values streams too.
-func buildFrameEt(appid uint16, seq uint32, vid, pcp int, et uint16, dst []byte) []byte {
-	payload := make([]byte, payloadLen)
-	binary.BigEndian.PutUint16(payload[0:2], appid)
-	binary.BigEndian.PutUint32(payload[2:6], seq)
-	binary.BigEndian.PutUint64(payload[6:14], uint64(time.Now().UnixNano()))
+func buildFrameEt(appid uint16, stNum uint16, sqNum uint16, vid, pcp int, et uint16, dst []byte) []byte {
+	var apdu []byte
+	if et == etGOOSE {
+		apdu = iec.BuildGOOSEAPDU(stNum, sqNum, time.Now(), false, 1, "LLN0$GO$gcb0", "LLN0$dataset", "LLN0$GO$gcb0")
+	} else {
+		apdu = iec.BuildSVAPDU(stNum, 1, "MU01")
+	}
+	return assembleFrame(appid, apdu, vid, pcp, et)
+}
 
+func assembleFrame(appid uint16, apdu []byte, vid, pcp int, et uint16) []byte {
+	// Ethernet header + GOOSE/SV header (8 bytes) + APDU
+	header := make([]byte, payloadHeaderLen)
+	binary.BigEndian.PutUint16(header[0:2], appid)
+	binary.BigEndian.PutUint16(header[2:4], uint16(len(apdu)+8)) // Length = header + APDU; must be >=8
+	binary.BigEndian.PutUint16(header[4:6], 0) // Reserved 1
+	binary.BigEndian.PutUint16(header[6:8], 0) // Reserved 2
 	tagged := vid >= 0
 	var frame []byte
 	if tagged {
-		frame = make([]byte, 14+4+payloadLen)
+		frame = make([]byte, 14+4+len(header)+len(apdu))
 	} else {
-		frame = make([]byte, 14+payloadLen)
+		frame = make([]byte, 14+len(header)+len(apdu))
 	}
-	copy(frame[0:6], dst)
+	copy(frame[0:6], dstMAC)
 	copy(frame[6:12], srcMAC)
 	if tagged {
-		frame[12], frame[13] = 0x81, 0x00 // 802.1Q
+		frame[12], frame[13] = 0x81, 0x00
 		tci := uint16(pcp&0x07)<<13 | uint16(vid&0x0FFF)
 		binary.BigEndian.PutUint16(frame[14:16], tci)
 		binary.BigEndian.PutUint16(frame[16:18], et)
-		copy(frame[18:18+payloadLen], payload)
+		off := 18
+		copy(frame[off:off+len(header)], header)
+		copy(frame[off+len(header):], apdu)
 	} else {
 		binary.BigEndian.PutUint16(frame[12:14], et)
-		copy(frame[14:14+payloadLen], payload)
+		copy(frame[14:14+len(header)], header)
+		copy(frame[14+len(header):], apdu)
 	}
 	return frame
 }
 
 // parseFrame extracts (appid, seq, txns, vid, pcp) from a received frame.
 // Returns ok=false when the frame is not one of ours (wrong ethertype/appid).
-func parseFrame(frame []byte, wantAppid uint16) (appid uint16, seq uint32, sentAt time.Time, vid, pcp int, ok bool) {
-	if len(frame) < 14+payloadLen {
-		return 0, 0, time.Time{}, -1, 0, false
+func parseFrame(frame []byte, wantAppid uint16) (appid uint16, stNum uint16, sqNum uint16, smpCnt uint16, sentAt time.Time, allData bool, vid, pcp int, ok bool) {
+	if len(frame) < 14+payloadHeaderLen {
+		return 0, 0, 0, 0, time.Time{}, false, -1, 0, false
 	}
 	et := binary.BigEndian.Uint16(frame[12:14])
 	off := 14
 	vid, pcp = -1, 0
-	if et == 0x8100 || et == 0x88a8 { // VLAN tag
-		if len(frame) < 18+payloadLen {
-			return 0, 0, time.Time{}, -1, 0, false
+	if et == 0x8100 || et == 0x88a8 {
+		if len(frame) < 18+payloadHeaderLen {
+			return 0, 0, 0, 0, time.Time{}, false, -1, 0, false
 		}
 		tci := binary.BigEndian.Uint16(frame[14:16])
 		vid = int(tci & 0x0FFF)
@@ -230,15 +224,23 @@ func parseFrame(frame []byte, wantAppid uint16) (appid uint16, seq uint32, sentA
 		off = 18
 	}
 	if et != etGOOSE && et != etSV {
-		return 0, 0, time.Time{}, -1, 0, false
+		return 0, 0, 0, 0, time.Time{}, false, -1, 0, false
+	}
+	if len(frame) < off+payloadHeaderLen {
+		return 0, 0, 0, 0, time.Time{}, false, -1, 0, false
 	}
 	appid = binary.BigEndian.Uint16(frame[off : off+2])
 	if wantAppid != 0 && appid != wantAppid {
-		return 0, 0, time.Time{}, -1, 0, false
+		return 0, 0, 0, 0, time.Time{}, false, -1, 0, false
 	}
-	seq = binary.BigEndian.Uint32(frame[off+2 : off+6])
-	txns := binary.BigEndian.Uint64(frame[off+6 : off+14])
-	return appid, seq, time.Unix(0, int64(txns)), vid, pcp, true
+	apdu := frame[off+payloadHeaderLen:]
+	if et == etGOOSE {
+		stNum, sqNum, sentAt, allData, okParse := iec.ParseGOOSEAPDU(apdu)
+		return appid, stNum, sqNum, 0, sentAt, allData, vid, pcp, okParse
+	} else {
+		smpCnt, okParse := iec.ParseSVAPDU(apdu)
+		return appid, 0, 0, smpCnt, time.Time{}, false, vid, pcp, okParse
+	}
 }
 
 // parseMAC parses "aa:bb:cc:dd:ee:ff" into 6 bytes.
@@ -345,7 +347,8 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 
 	fmt.Printf("send: %d frames @ %.0f Hz, vid=%d pcp=%d, burst=%v, et=0x%04x\n", count, rate, vid, pcp, burst, et)
 	start := time.Now()
-	seq := uint32(1)
+	stNum := uint16(1)
+	sqNum := uint16(1)
 	if loop {
 		count = int(^uint(0) >> 1) // huge; run until signal
 	}
@@ -359,9 +362,8 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 			return
 		default:
 		}
-		seq++
 		sent++
-		frame := buildFrameEt(appid, seq, vid, pcp, et, dstMAC)
+		frame := buildFrameEt(appid, stNum, sqNum, vid, pcp, et, dstMAC)
 		if err := sock.Send(frame); err != nil {
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
 			os.Exit(1)
@@ -377,9 +379,9 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 				default:
 				}
 				time.Sleep(d)
-				seq++
+				sqNum++
 				sent++
-				frame := buildFrameEt(appid, seq, vid, pcp, et, dstMAC)
+				frame := buildFrameEt(appid, stNum, sqNum, vid, pcp, et, dstMAC)
 				if err := sock.Send(frame); err != nil {
 					fmt.Fprintf(os.Stderr, "send: %v\n", err)
 					os.Exit(1)
@@ -444,11 +446,13 @@ func recv(ifaceName string, appid uint16, dur time.Duration, loop bool) {
 			}
 			continue
 		}
-		_, seq, txns, vid, pcp, ok := parseFrame(buf[:nr], appid)
+		appidVal, stNum, sqNum, smpCntVal, txns, allData, vid, pcp, ok := parseFrame(buf[:nr], appid)
 		if !ok {
 			continue
 		}
-		s.noteFrame(seq, txns)
+		_ = allData; _ = vid; _ = pcp; _ = smpCntVal; _ = appidVal
+		key := fmt.Sprintf("%d|%d", stNum, sqNum)
+		s.noteFrame(key, txns)
 		s.noteTagged(vid, pcp)
 	}
 	s.report("recv")
@@ -490,11 +494,11 @@ func pingMode(ifaceName string, appid uint16, count int, rate float64, vid, pcp 
 			if nr == 0 {
 				continue
 			}
-			_, seq, txns, _, _, ok := parseFrame(buf[:nr], appid)
+			_, _, _, _, _, _, _, _, ok := parseFrame(buf[:nr], appid)
 			if !ok {
 				continue
 			}
-			s.noteFrame(seq, txns)
+			s.noteFrame("ping", time.Now())
 		}
 	}()
 
@@ -505,7 +509,7 @@ func pingMode(ifaceName string, appid uint16, count int, rate float64, vid, pcp 
 			break
 		default:
 		}
-		frame := buildFrame(appid, uint32(i+1), vid, pcp)
+		frame := buildFrame(appid, uint16(i+1), 1, vid, pcp)
 		if err := sock.Send(frame); err != nil {
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
 			os.Exit(1)
