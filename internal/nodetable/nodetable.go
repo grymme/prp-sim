@@ -19,13 +19,24 @@ type Table struct {
 	mu      sync.RWMutex
 	entries map[string]Entry
 	maxSize int
+	// now returns the current time; injectable for deterministic tests.
+	now func() time.Time
 }
 
 func NewTable(maxSize int) *Table {
 	return &Table{
 		entries: make(map[string]Entry),
 		maxSize: maxSize,
+		now:     time.Now,
 	}
+}
+
+// SetClock replaces the table's time source (used by tests to drive
+// expiry deterministically without sleeping).
+func (t *Table) SetClock(now func() time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.now = now
 }
 
 func key(srcMAC string, seq int) string {
@@ -41,7 +52,7 @@ func (t *Table) InsertWithExpiry(srcMAC string, seq, lanID int, expiryMs int) {
 		SrcMAC:   srcMAC,
 		SeqNo:    seq,
 		LANID:    lanID,
-		LastSeen: time.Now(),
+		LastSeen: t.now(),
 		ExpiryMs: expiryMs,
 	}
 	if t.maxSize > 0 && len(t.entries) > t.maxSize {
@@ -67,7 +78,7 @@ func (t *Table) Find(srcMAC string, seq int) bool {
 		return false
 	}
 	// Check if expired
-	if time.Since(entry.LastSeen) > time.Duration(entry.ExpiryMs)*time.Millisecond {
+	if t.now().Sub(entry.LastSeen) > time.Duration(entry.ExpiryMs)*time.Millisecond {
 		return false
 	}
 	return true
@@ -93,7 +104,7 @@ func (t *Table) FlushFor(srcMAC string) int {
 
 // Cleanup removes stale entries. Returns count of removed entries.
 func (t *Table) Cleanup() int {
-	now := time.Now()
+	now := t.now()
 	removed := 0
 	t.mu.Lock()
 	defer t.mu.Unlock()

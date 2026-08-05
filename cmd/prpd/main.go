@@ -34,6 +34,8 @@ func main() {
 		LanAInterface:       cfg.Interfaces.LanA,
 		LanBInterface:       cfg.Interfaces.LanB,
 		InterlinkInterface:  cfg.Interfaces.Interlink,
+		LanID:               cfg.Interfaces.LanID,
+		NetID:               cfg.Interfaces.NetID,
 		PRPID:               cfg.PRP.PRPID,
 		TrailerEnabled:      cfg.PRP.TrailerEnabled,
 		Debug:               os.Getenv("DEBUG_FRAMES") == "1",

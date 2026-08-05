@@ -26,6 +26,13 @@ type Config struct {
 		LanB      string `yaml:"lan_b"`
 		Interlink string `yaml:"interlink"`
 
+		// lan_id is used by the hsr-prp role: which PRP LAN the interlink
+		// attaches to (A or B).
+		LanID string `yaml:"lan_id"`
+		// net_id is the PRP network ID (NetId) of the coupled PRP network,
+		// range 1-6. Forms the HSR PathId together with lan_id.
+		NetID int `yaml:"net_id"`
+
 		// IPv4 holds optional static IPv4 addresses (CIDR) per port.
 		// Empty string = leave the port unnumbered.
 		IPv4 struct {
@@ -75,12 +82,31 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	if c.Node.Role != "redbox" {
-		return nil, fmt.Errorf("invalid role: %s (must be redbox)", c.Node.Role)
+	// Normalise the role: `redbox` is a legacy alias for `prp-san`.
+	switch c.Node.Role {
+	case "redbox":
+		c.Node.Role = "prp-san"
+	case "prp-san", "hsr-san", "hsr-prp":
+	default:
+		return nil, fmt.Errorf("invalid role: %s (must be prp-san, hsr-san or hsr-prp)", c.Node.Role)
 	}
 
 	if c.Interfaces.LanA == "" || c.Interfaces.LanB == "" {
 		return nil, fmt.Errorf("lan_a and lan_b interfaces must be specified")
+	}
+
+	// hsr-prp couples the HSR ring to one PRP LAN: the interlink must be
+	// configured with a valid lan_id (A|B) and net_id (1-6).
+	if c.Node.Role == "hsr-prp" {
+		if c.Interfaces.Interlink == "" {
+			return nil, fmt.Errorf("hsr-prp role requires interfaces.interlink")
+		}
+		if c.Interfaces.LanID != "A" && c.Interfaces.LanID != "B" {
+			return nil, fmt.Errorf("hsr-prp role requires interfaces.lan_id: A or B (got %q)", c.Interfaces.LanID)
+		}
+		if c.Interfaces.NetID < 1 || c.Interfaces.NetID > 6 {
+			return nil, fmt.Errorf("hsr-prp role requires interfaces.net_id: 1-6 (got %d)", c.Interfaces.NetID)
+		}
 	}
 
 	// Validate the multicast filter pattern early so a typo is reported at
@@ -120,10 +146,27 @@ func Load(path string) (*Config, error) {
 
 	// Apply environment variable overrides
 	if role := os.Getenv("PRP_ROLE"); role != "" {
-		if role != "redbox" {
-			return nil, fmt.Errorf("invalid PRP_ROLE: %s (must be redbox)", role)
+		switch role {
+		case "redbox":
+			c.Node.Role = "prp-san"
+		case "prp-san", "hsr-san", "hsr-prp":
+			c.Node.Role = role
+		default:
+			return nil, fmt.Errorf("invalid PRP_ROLE: %s (must be prp-san, hsr-san or hsr-prp)", role)
 		}
-		c.Node.Role = role
+	}
+	if lanID := os.Getenv("PRP_LAN_ID"); lanID != "" {
+		if lanID != "A" && lanID != "B" {
+			return nil, fmt.Errorf("invalid PRP_LAN_ID: %s (must be A or B)", lanID)
+		}
+		c.Interfaces.LanID = lanID
+	}
+	if netID := os.Getenv("PRP_NET_ID"); netID != "" {
+		id, err := strconv.Atoi(netID)
+		if err != nil || id < 1 || id > 6 {
+			return nil, fmt.Errorf("invalid PRP_NET_ID: %s (must be 1-6)", netID)
+		}
+		c.Interfaces.NetID = id
 	}
 	if prpID := os.Getenv("PRP_PRP_ID"); prpID != "" {
 		if id, err := strconv.Atoi(prpID); err == nil && id > 0 {

@@ -48,6 +48,8 @@ type Node struct {
 	proxyTable        map[string]time.Time
 	proxyTableMu      sync.Mutex
 	proxyTableForget  time.Duration
+	// now returns the current time; injectable for deterministic tests.
+	now func() time.Time
 }
 
 // StopChan returns the channel that is closed when the node is stopped.
@@ -63,9 +65,13 @@ type Config struct {
 	LanAInterface      string
 	LanBInterface      string
 	InterlinkInterface string
-	PRPID              int
-	TrailerEnabled     bool
-	Debug              bool
+	// LanID ("A"/"B") and NetID (1-6) describe the coupled PRP LAN for
+	// the hsr-prp role; empty/0 otherwise.
+	LanID            string
+	NetID            int
+	PRPID            int
+	TrailerEnabled   bool
+	Debug            bool
 
 	// ForwardAll: when true (default), the RedBox forwards all LAN frames
 	// to the interlink; when false, only frames destined to SANs learned
@@ -94,6 +100,25 @@ type frameEvent struct {
 	iface   string // "lan_a", "lan_b", "interlink"
 	frame   []byte
 	frameSz int
+}
+
+// SetClock replaces the node's time source (used by tests to drive
+// supervision/entry expiry deterministically). Also wires it into the
+// duplicate-detection table.
+func (n *Node) SetClock(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	n.now = now
+	n.dupTable.SetClock(now)
+}
+
+// nowf returns the node's current time source (wall clock by default).
+func (n *Node) nowf() time.Time {
+	if n.now == nil {
+		return time.Now()
+	}
+	return n.now()
 }
 
 // NewNode creates a new PRP node from the given configuration.
@@ -127,6 +152,7 @@ func NewNode(cfg *Config) *Node {
 		proxyTableForget:  time.Duration(proxyForgetMs) * time.Millisecond,
 		supervisionForget: time.Duration(supForgetMs) * time.Millisecond,
 		supervisionSeqs:   make(map[string]uint16),
+		now:              time.Now,
 	}
 }
 
@@ -279,7 +305,7 @@ func (n *Node) cleanupSupervisionSeen() {
 	if len(n.supervisionSeen) == 0 {
 		return
 	}
-	cutoff := time.Now().Add(-n.supervisionForget)
+	cutoff := n.nowf().Add(-n.supervisionForget)
 	for mac, last := range n.supervisionSeen {
 		if last.Before(cutoff) {
 			delete(n.supervisionSeen, mac)
@@ -480,7 +506,7 @@ func (n *Node) shouldForwardToInterlink(frame []byte) bool {
 	n.proxyTableMu.Lock()
 	seen, ok := n.proxyTable[dst]
 	n.proxyTableMu.Unlock()
-	if ok && time.Since(seen) <= n.proxyTableForget {
+	if ok && n.nowf().Sub(seen) <= n.proxyTableForget {
 		return true
 	}
 	return false
@@ -568,7 +594,7 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	if len(event.frame) >= 12 {
 		src := engine.GetSrcMAC(event.frame)
 		n.proxyTableMu.Lock()
-		n.proxyTable[src] = time.Now()
+		n.proxyTable[src] = n.nowf()
 		n.proxyTableMu.Unlock()
 	}
 
@@ -619,7 +645,7 @@ func (n *Node) handleSupervisionFrame(event frameEvent) {
 	if n.supervisionSeen == nil {
 		n.supervisionSeen = make(map[string]time.Time)
 	}
-	n.supervisionSeen[sup.SrcMAC] = time.Now()
+	n.supervisionSeen[sup.SrcMAC] = n.nowf()
 
 	// A regression of the supervision sequence number (16-bit, wrap-aware)
 	// means the peer restarted: its counters were reset, so the duplicate-
