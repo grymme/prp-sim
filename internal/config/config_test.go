@@ -140,3 +140,114 @@ interfaces:
 		t.Fatal("expected error for invalid PRP_LAN_A_IP")
 	}
 }
+
+func TestHSRPRPRoleRequiresLanID(t *testing.T) {
+	path := writeTempConfig(t, `
+node:
+  role: hsr-prp
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+hsr:
+  prp_id: 1
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error: hsr-prp without hsr.lan_id")
+	}
+}
+
+func TestHSRPRPRoleRequiresNetID(t *testing.T) {
+	path := writeTempConfig(t, `
+node:
+  role: hsr-prp
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+hsr:
+  lan_id: A
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error: hsr-prp without hsr.prp_id")
+	}
+}
+
+func TestHSRPRPRoleNetIDRange(t *testing.T) {
+	path := writeTempConfig(t, `
+node:
+  role: hsr-prp
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+hsr:
+  prp_id: 9
+  lan_id: A
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error: NetId 9 out of range")
+	}
+}
+
+func TestHSRBlockValid(t *testing.T) {
+	path := writeTempConfig(t, `
+node:
+  role: hsr-prp
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+hsr:
+  prp_id: 3
+  lan_id: B
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HSR.PRPID != 3 || cfg.HSR.LanID != "B" {
+		t.Errorf("hsr block parsed as prp_id=%d lan_id=%s, want 3/B", cfg.HSR.PRPID, cfg.HSR.LanID)
+	}
+}
+
+func TestHSREnvOverrides(t *testing.T) {
+	t.Setenv("HSR_PRP_ID", "5")
+	t.Setenv("HSR_LAN_ID", "A")
+	path := writeTempConfig(t, `
+node:
+  role: hsr-prp
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+hsr:
+  prp_id: 1
+  lan_id: B
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HSR.PRPID != 5 || cfg.HSR.LanID != "A" {
+		t.Errorf("env overrides not applied: prp_id=%d lan_id=%s, want 5/A", cfg.HSR.PRPID, cfg.HSR.LanID)
+	}
+}
+
+func TestHSRHSRRoleAccepted(t *testing.T) {
+	path := writeTempConfig(t, `
+node:
+  role: hsr-hsr
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Node.Role != "hsr-hsr" {
+		t.Errorf("role = %s, want hsr-hsr", cfg.Node.Role)
+	}
+}

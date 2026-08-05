@@ -13,6 +13,7 @@ func TestParseRole(t *testing.T) {
 		{"prp-san", RolePRPSan, true},
 		{"hsr-san", RoleHSRSan, true},
 		{"hsr-prp", RoleHSRPRP, true},
+		{"hsr-hsr", RoleHSRHSR, true},
 		{"dan", "", false},
 		{"bogus", "", false},
 	}
@@ -42,6 +43,7 @@ func TestRoleInfo(t *testing.T) {
 		{RolePRPSan, false, false, true},
 		{RoleHSRSan, true, false, true},
 		{RoleHSRPRP, true, true, false},
+		{RoleHSRHSR, true, false, false},
 	}
 	for _, c := range cases {
 		n := NewNode(&Config{Role: string(c.role)})

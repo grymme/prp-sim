@@ -8,8 +8,10 @@
 #
 # Environment-variable overrides (take precedence over this file):
 #   PRP_CONFIG_PATH    path to an alternative config file
-#   PRP_ROLE           "redbox"                       (overrides node.role)
+#   PRP_ROLE           "prp-san|hsr-san|hsr-prp|hsr-hsr" (overrides node.role)
 #   PRP_PRP_ID         1-65535                    (overrides prp.prp_id)
+#   HSR_PRP_ID         1-6                        (overrides hsr.prp_id, hsr-prp)
+#   HSR_LAN_ID         A|B                        (overrides hsr.lan_id, hsr-prp)
 #   PRP_LAN_A_IP       CIDR, e.g. "10.0.0.1/24"   (overrides interfaces.ipv4.lan_a)
 #   PRP_LAN_B_IP       CIDR, e.g. "10.0.0.2/24"   (overrides interfaces.ipv4.lan_b)
 #   PRP_INTERLINK_IP   CIDR, e.g. "10.0.0.3/24"   (overrides interfaces.ipv4.interlink)
@@ -24,12 +26,26 @@ node:
   # supervision frames. If empty, the container hostname is used.
   name: "prp-redbox-1"
 
-  # Operating mode:
-  #   redbox — L2 bridge between the SAN (interlink port) and the two PRP
-  #            LANs. Frames from the interlink are duplicated onto LAN A
-  #            and LAN B with RCT trailers; frames from the LANs are
-  #            de-duplicated and forwarded to the interlink.
+  # Operating mode (RedBox):
+  #   prp-san — SAN into two PRP LANs (legacy name: redbox)
+  #   hsr-san — SAN into an HSR ring
+  #   hsr-prp — HSR ring into one PRP LAN (coupling; requires hsr: block)
+  #   hsr-hsr — two HSR rings coupled (QuadBox)
   role: redbox
+
+hsr:
+  # HSR ring configuration. Only the hsr-prp role uses these two keys:
+  #
+  #   prp_id (NetId, 1-6): the coupled PRP network identifier. Both
+  #     coupling RedBoxes that attach the same PRP network to the ring
+  #     share this value; together with lan_id it forms the 4-bit PathId
+  #     carried in the HSR tag, which prevents frames from being
+  #     reinjected into the other PRP LAN.
+  #   lan_id (A|B): which PRP LAN this RedBox's interlink connects to.
+  #
+  # Environment overrides: HSR_PRP_ID, HSR_LAN_ID.
+  prp_id: 1
+  lan_id: A
 
 interfaces:
   # Kernel interface names of the physical ports. In GNS3 these are

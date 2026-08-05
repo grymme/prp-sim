@@ -20,6 +20,7 @@ const (
 	RolePRPSan Role = "prp-san" // SAN into two PRP LANs (legacy "redbox")
 	RoleHSRSan Role = "hsr-san" // SAN into an HSR ring
 	RoleHSRPRP Role = "hsr-prp" // HSR ring into one PRP LAN (coupling)
+	RoleHSRHSR Role = "hsr-hsr" // two HSR rings coupled (QuadBox)
 )
 
 // ParseRole normalises a role string; "redbox" maps to RolePRPSan.
@@ -33,6 +34,8 @@ func ParseRole(s string) (Role, error) {
 		return RoleHSRSan, nil
 	case "hsr-prp":
 		return RoleHSRPRP, nil
+	case "hsr-hsr":
+		return RoleHSRHSR, nil
 	}
 	return "", fmt.Errorf("invalid role %q", s)
 }
@@ -57,6 +60,10 @@ func infoFor(r Role) RoleInfo {
 		return RoleInfo{Role: r, RedundancyPortsAreHSR: true, InterlinkIsSAN: true}
 	case RoleHSRPRP:
 		return RoleInfo{Role: r, RedundancyPortsAreHSR: true, CoupledToPRP: true}
+	case RoleHSRHSR:
+		// QuadBox: ring ports are HSR; the interlink connects to another
+		// HSR ring (forwarded as HSR-tagged traffic).
+		return RoleInfo{Role: r, RedundancyPortsAreHSR: true}
 	default: // prp-san
 		return RoleInfo{Role: RolePRPSan, InterlinkIsSAN: true}
 	}
