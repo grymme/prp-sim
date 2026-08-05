@@ -94,6 +94,34 @@ Nodes on different physical networks.
 2. Check GNS3 link status (green = connected)
 3. Use GNS3's packet capture to verify frames
 
+#### MTU Too Small on Switch / Bridge / veth
+PRP appends a 6-byte RCT trailer, so a full-size 1514-byte SAN frame needs
+1520 bytes on the wire. The simulator raises the container interface MTU to
+1506 (1500 + 6 RCT), but the MTU of the *other* end of the link is not under
+its control:
+
+- **Docker veth pairs / bridges** keep their default MTU (typically 1500),
+  which still works in the test topology because Docker allows frames up to
+  the veth MTU and the 1506 payload stays within 1500+22 (Ethernet overhead).
+  `ping -s 1472` (1520 B on the wire) is the largest standard-size probe.
+- **Physical switches / hardware RedBoxes** expect the PRP LAN ports to carry
+  frames up to 1520 B. A switch port limited to an MTU of 1500 will drop
+  full-size PRP frames (1514 + 6 = 1520 B) at the ingress of the peer RedBox.
+
+**Solution**:
+1. On managed switches, raise the MTU of the ports facing the RedBoxes to
+   at least 1520 (many industrial switches accept 1522 with VLAN tags; PRP
+   needs 1520 for the RCT, 1524 for VLAN-tagged + RCT).
+2. In Docker/GNS3 setups, set the veth/bridge MTU explicitly if jumbo
+   probes are used:
+   ```bash
+   # Raise the bridge and veth MTU to match the container (1506):
+   ip link set dev <bridge> mtu 1506
+   ip link set dev <veth> mtu 1506
+   ```
+3. Verify end-to-end: `ping -M do -s 1472 <peer>` passes from every SAN;
+   if smaller probes fail, check MTU on each hop.
+
 ### 3. Duplicate Detection Issues
 
 **Symptoms**:

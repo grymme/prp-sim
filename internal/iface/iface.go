@@ -91,6 +91,14 @@ func CreateRawSocket(iface string) (*RawSocket, error) {
 		return nil, fmt.Errorf("set PACKET_IGNORE_OUTGOING: %w", err)
 	}
 
+	// Request PACKET_AUXDATA so VLAN tags stripped by RX offload are
+	// returned as ancillary data (tcpdump/libpcap do the same). RawSocket.Read
+	// uses this to reconstruct the original tagged frame.
+	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_AUXDATA, 1); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("set PACKET_AUXDATA: %w", err)
+	}
+
 	return &RawSocket{
 		name:    iface,
 		ifIndex: ifIndex,
@@ -100,8 +108,59 @@ func CreateRawSocket(iface string) (*RawSocket, error) {
 }
 
 // Read reads a frame from the interface.
+//
+// VLAN RX offload (veth/NIC + packet sockets) may deliver frames with the
+// 802.1Q tag stripped: the tag is returned as PACKET_AUXDATA ancillary
+// data instead of inline bytes. PACKET_AUXDATA is enabled at socket
+// creation, so we reconstruct the frame here — inserting the 4-byte VLAN
+// header after the 12-byte MAC header — because the PRP engine (and its
+// LSDU math) must see the tag exactly as it appears on the wire. Without
+// this, VLAN-0 + priority-tagged IEC 61850 GOOSE/SV frames lose their
+// PCP bits and VLAN classification.
 func (r *RawSocket) Read(buf []byte) (int, error) {
-	return unix.Read(r.fd, buf)
+	// Ancillary buffer for PACKET_AUXDATA (up to a few cmsgs).
+	oob := make([]byte, 64)
+	n, oobn, _, _, err := unix.Recvmsg(r.fd, buf, oob, 0)
+	if err != nil {
+		return 0, err
+	}
+	if oobn == 0 {
+		return n, nil
+	}
+	msgs, perr := unix.ParseSocketControlMessage(oob[:oobn])
+	if perr != nil {
+		return n, nil
+	}
+	for _, m := range msgs {
+		if m.Header.Level != unix.SOL_PACKET || m.Header.Type != unix.PACKET_AUXDATA {
+			continue
+		}
+		// TpacketAuxdata layout (native-endian):
+		//   Status(4) Len(4) Snaplen(4) Mac(2) Net(2) Vlan_tci(2) Vlan_tpid(2)
+		if len(m.Data) < 20 {
+			continue
+		}
+		status := binary.LittleEndian.Uint32(m.Data[0:4])
+		if status&unix.TP_STATUS_VLAN_VALID == 0 {
+			continue
+		}
+		tci := binary.LittleEndian.Uint16(m.Data[16:18])
+		tpid := binary.LittleEndian.Uint16(m.Data[18:20])
+		if tpid == 0 {
+			tpid = 0x8100 // fallback when TPID not reported
+		}
+		if n < 12 || len(buf) < n+4 {
+			return n, nil // cannot expand; leave frame untagged
+		}
+		// Shift the payload right by 4 and insert the 802.1Q header.
+		copy(buf[16:n+4], buf[12:n])
+		buf[12] = byte(tpid >> 8)
+		buf[13] = byte(tpid)
+		buf[14] = byte(tci >> 8)
+		buf[15] = byte(tci)
+		return n + 4, nil
+	}
+	return n, nil
 }
 
 // Write writes a frame to the interface.

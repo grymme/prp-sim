@@ -34,12 +34,22 @@ const (
 // SequenceManager tracks per-source-MAC sequence numbers. Each PRP node
 // owns its own instance so multiple nodes (and tests) never share state.
 type SequenceManager struct {
-	mu   sync.Mutex
-	seqs map[string]uint16
+	mu    sync.Mutex
+	start uint16
+	seqs  map[string]uint16
 }
 
 func NewSequenceManager() *SequenceManager {
-	return &SequenceManager{seqs: make(map[string]uint16)}
+	return &SequenceManager{start: 0, seqs: make(map[string]uint16)}
+}
+
+// NewSequenceManagerWithStart returns a SequenceManager whose first
+// sequence number for each source MAC is start. Randomizing the start
+// across node restarts prevents a restarted node from reusing seq 0..k
+// inside a peer's entry_forget window (which would wrongly discard those
+// fresh frames as duplicates).
+func NewSequenceManagerWithStart(start uint16) *SequenceManager {
+	return &SequenceManager{start: start, seqs: make(map[string]uint16)}
 }
 
 // Next returns the next sequence number for a given source MAC and
@@ -49,7 +59,10 @@ func NewSequenceManager() *SequenceManager {
 func (s *SequenceManager) Next(srcMAC string) uint16 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seq := s.seqs[srcMAC]
+	seq, ok := s.seqs[srcMAC]
+	if !ok {
+		seq = s.start
+	}
 	s.seqs[srcMAC] = seq + 1
 	return seq
 }

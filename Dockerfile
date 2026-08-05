@@ -13,7 +13,11 @@ COPY . .
 RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w" \
     -trimpath \
-    -o /prpd ./cmd/prpd
+    -o /prpd ./cmd/prpd \
+ && CGO_ENABLED=0 go build \
+    -ldflags="-s -w" \
+    -trimpath \
+    -o /usr/local/bin/trafficgen ./cmd/trafficgen
 
 # Runtime stage
 FROM alpine:3.19
@@ -26,6 +30,7 @@ RUN apk add --no-cache iproute2 busybox-extras tcpdump
 
 # Copy only the binary and static files from builder
 COPY --from=builder /prpd /usr/local/bin/prpd
+COPY --from=builder /usr/local/bin/trafficgen /usr/local/bin/trafficgen
 COPY config.yaml /etc/prp/config.yaml
 COPY entrypoint.sh /entrypoint.sh
 

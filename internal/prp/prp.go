@@ -2,6 +2,8 @@ package prp
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -41,6 +43,7 @@ type Node struct {
 	stopLock          sync.Mutex
 	cleanupTimer      *time.Timer
 	supervisionSeen   map[string]time.Time
+	supervisionSeqs   map[string]uint16
 	supervisionForget time.Duration
 	dupTable          *nodetable.Table
 	proxyTable        map[string]time.Time
@@ -48,6 +51,7 @@ type Node struct {
 	proxyTableForget  time.Duration
 }
 
+// StopChan returns the channel that is closed when the node is stopped.
 // StopChan returns the channel that is closed when the node is stopped.
 func (n *Node) StopChan() <-chan struct{} {
 	return n.stopChan
@@ -118,14 +122,28 @@ func NewNode(cfg *Config) *Node {
 	}
 	return &Node{
 		Config:            cfg,
-		seqMgr:            engine.NewSequenceManager(),
+		seqMgr:            engine.NewSequenceManagerWithStart(randSeqStart()),
 		frameBuffer:       make(chan frameEvent, 10000),
 		stopChan:          make(chan struct{}),
 		dupTable:          nodetable.NewTable(maxSize),
 		proxyTable:        make(map[string]time.Time),
 		proxyTableForget:  time.Duration(proxyForgetMs) * time.Millisecond,
 		supervisionForget: time.Duration(supForgetMs) * time.Millisecond,
+		supervisionSeqs:   make(map[string]uint16),
 	}
+}
+
+// randSeqStart returns a random 16-bit sequence-number start. PRP sequence
+// numbers are only meaningful relative to one another within the duplicate-
+// detection window; a random start prevents a restarted node from reusing
+// seq 0..k inside a peer's entry_forget window (which would wrongly
+// discard its first frames after restart as duplicates).
+func randSeqStart() uint16 {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return binary.BigEndian.Uint16(b[:])
+	}
+	return uint16(time.Now().UnixNano() & 0xffff)
 }
 
 // Start initializes interfaces and starts the main processing loops.
@@ -557,6 +575,21 @@ func (n *Node) shouldForwardToTap(frame []byte) bool {
 // "01-00-5E" or "33-33". An empty or unparsable pattern allows all
 // multicast.
 func (n *Node) multicastAllowed(frame []byte) bool {
+	// Broadcast (ff:ff:ff:ff:ff:ff) must ALWAYS pass: it is technically
+	// multicast (first octet odd) but a RedBox must flood it regardless
+	// of the configured multicast prefix filter, or ARP/ND break.
+	if len(frame) >= 6 {
+		allFF := true
+		for _, b := range frame[0:6] {
+			if b != 0xff {
+				allFF = false
+				break
+			}
+		}
+		if allFF {
+			return true
+		}
+	}
 	prefix := parseMulticastPattern(n.Config.MulticastFirstOctet)
 	if len(prefix) == 0 {
 		return true
@@ -704,6 +737,24 @@ func (n *Node) handleSupervisionFrame(event frameEvent) {
 		n.supervisionSeen = make(map[string]time.Time)
 	}
 	n.supervisionSeen[sup.SrcMAC] = time.Now()
+
+	// A regression of the supervision sequence number (16-bit, wrap-aware)
+	// means the peer restarted: its counters were reset, so the duplicate-
+	// detection entries we hold for it describe a previous incarnation.
+	// Flush them; otherwise the fresh low sequence numbers the restarted
+	// node emits would be wrongly discarded as stale duplicates.
+	if last, ok := n.supervisionSeqs[sup.SrcMAC]; ok {
+		if diff := int16(sup.Seq - last); diff < 0 {
+			if removed := n.dupTable.FlushFor(sup.SrcMAC); removed > 0 {
+				log.Printf("prp: peer %s restarted (supervision seq %d -> %d), flushed %d dup entries", sup.SrcMAC, last, sup.Seq, removed)
+			} else if n.Config.Debug {
+				log.Printf("prp: peer %s supervision seq regressed %d -> %d (restart detected)", sup.SrcMAC, last, sup.Seq)
+			}
+		}
+	}
+	// Record for the next frame (needed for cross-restart regression
+	// detection on the very first supervision frame after a restart).
+	n.supervisionSeqs[sup.SrcMAC] = sup.Seq
 }
 
 // SendSupervisionFrame sends a PRP supervision frame on both LANs.

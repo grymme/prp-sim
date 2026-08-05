@@ -460,6 +460,214 @@ func TestDANUnicastFilter(t *testing.T) {
 	}
 }
 
+// TestBroadcastUnderMulticastFilter: with forward_all=false and a
+// multicast prefix filter set, broadcast frames (ff:ff:ff:ff:ff:ff) must
+// still be forwarded from the LANs to the interlink. A broadcast IS
+// multicast (first octet odd), so a naive prefix filter like "01-00-5E"
+// would drop it - breaking ARP. Real RedBoxes always flood broadcast.
+func TestBroadcastUnderMulticastFilter(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	n.Config.MulticastFirstOctet = "01-00-5E"
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+
+	// ARP request: broadcast dst.
+	arp := buildARPFrame(src, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	enc := engine.EncodeRCT(arp, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("broadcast/ARP must be forwarded under multicast filter, got %d forwards", len(inter.frames))
+	}
+
+	// Plain unicast to an unknown SAN MAC: still filtered (proxy not learned).
+	inter.drain()
+	uni := ethFrame(src, [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
+	enc = engine.EncodeRCT(uni, 1, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 0 {
+		t.Fatalf("unknown unicast must still be filtered, got %d forwards", len(inter.frames))
+	}
+}
+
+// buildARPFrame creates an ARP request/response frame (EtherType 0x0806).
+func buildARPFrame(src, dst [6]byte) []byte {
+	f := make([]byte, 60)
+	copy(f[0:6], dst[:])
+	copy(f[6:12], src[:])
+	f[12], f[13] = 0x08, 0x06 // ARP
+	// htype=1, ptype=0x0800, hlen=6, plen=4, op=1 (request)
+	f[14], f[15] = 0x00, 0x01
+	f[16], f[17] = 0x08, 0x00
+	f[18], f[19] = 0x06, 0x04
+	f[20], f[21] = 0x00, 0x01
+	copy(f[22:28], src[:])
+	copy(f[28:32], []byte{10, 0, 0, 1})
+	copy(f[38:44], []byte{0, 0, 0, 0, 0, 0})
+	copy(f[44:48], []byte{10, 0, 0, 2})
+	return f
+}
+
+// TestGOOSEMulticastDefault: GOOSE (IEC 61850-8-1) is L2 multicast
+// 01-0C-CD-01-xx. With the default empty filter ALL multicast must pass,
+// so GOOSE reaches the interlink from the LANs.
+func TestGOOSEMulticastDefault(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	n.Config.MulticastFirstOctet = "" // default
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	goose := ethFrame(src, [6]byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	enc := engine.EncodeRCT(goose, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("GOOSE must pass default filter, got %d forwards", len(inter.frames))
+	}
+}
+
+// TestGOOSEBlockedByIPV4Filter documents the real-RedBox hazard: a
+// multicast filter of "01-00-5E" (IPv4 multicast only) blocks GOOSE
+// (01-0C-CD) and SV (01-0C-CD-04). This is exactly what happens on many
+// production RedBoxes; the test pins the current simulator behaviour so a
+// user who configures that filter knows GOOSE will not cross.
+func TestGOOSEBlockedByIPV4Filter(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	n.Config.MulticastFirstOctet = "01-00-5E"
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	goose := ethFrame(src, [6]byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	enc := engine.EncodeRCT(goose, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 0 {
+		t.Fatalf("GOOSE must be blocked by IPv4-only filter, got %d forwards", len(inter.frames))
+	}
+	t.Log("documented: 01-00-5E filter blocks GOOSE - configure 01-0C-CD or empty for IEC 61850")
+}
+
+// TestSVMulticastFiltered: SV (IEC 61850-9-2) dst 01-0C-CD-04-xx must be
+// filterable exactly like GOOSE.
+func TestSVMulticastFiltered(t *testing.T) {
+	n, _, _, inter := newNode()
+	n.Config.ForwardAll = false
+	n.Config.MulticastFirstOctet = "01-0C-CD"
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+
+	// SV dst 01-0C-CD-04-xx passes (prefix 01-0C-CD).
+	sv := ethFrame(src, [6]byte{0x01, 0x0c, 0xcd, 0x04, 0x00, 0x01})
+	enc := engine.EncodeRCT(sv, 0, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 1 {
+		t.Fatalf("SV with prefix 01-0C-CD must pass, got %d forwards", len(inter.frames))
+	}
+
+	// IPv4 multicast 01-00-5E is now blocked (prefix mismatch).
+	inter.drain()
+	ip4 := ethFrame(src, [6]byte{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01})
+	enc = engine.EncodeRCT(ip4, 1, 0)
+	n.handleIncomingPRPFrame(frameEvent{iface: "lan_a", frame: enc, frameSz: len(enc)})
+	if len(inter.frames) != 0 {
+		t.Fatalf("IPv4 multicast must be blocked by 01-0C-CD filter, got %d forwards", len(inter.frames))
+	}
+}
+
+// TestVLAN0PriorityTagging (IEC 61850 legacy default): a frame carrying a
+// null VLAN ID (VID 0) with priority bits (PCP 4) — 802.1Q "priority
+// tagging without segmentation" — must round-trip through the RCT
+// machinery and be classified as VLAN-tagged (LSDU -= 4), while the tag
+// itself stays intact.
+func TestVLAN0PriorityTagging(t *testing.T) {
+	// Build an Ethernet frame carrying 802.1Q tag: vid=0, pcp=4. The base
+	// is 70 bytes so the tagged frame (74 B) stays above the VLAN minimum
+	// frame size and EncodeRCT applies no padding.
+	base := make([]byte, 70)
+	copy(base[0:6], []byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01}) // GOOSE dst
+	copy(base[6:12], []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff})
+	base[12], base[13] = 0x88, 0xB8 // GOOSE EtherType
+	tagged := vlanPCPFrame(base, 0, 4)
+
+	// Classification: VLAN frame with null VLAN ID, still tagged.
+	if !engine.IsVLANFrame(tagged) {
+		t.Fatal("VLAN-0 tagged frame must be classified as VLAN frame")
+	}
+	if vid, ok := engine.GetVLANID(tagged); !ok || vid != 0 {
+		t.Fatalf("GetVLANID = %d, %v; want 0, true (null VLAN)", vid, ok)
+	}
+	if et := engine.GetEtherType(tagged); et != 0x88B8 {
+		t.Fatalf("GetEtherType = %#x, want 0x88b8 (GOOSE)", et)
+	}
+
+	// RCT round-trip: encode, then decode back.
+	enc := engine.EncodeRCT(tagged, 7, 0)
+	lanID, seq, payload, err := engine.DecodeRCT(enc)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if lanID != 0 || seq != 7 {
+		t.Fatalf("lanID=%d seq=%d, want 0, 7", lanID, seq)
+	}
+	if !bytes.Equal(payload, tagged) {
+		t.Error("payload with VLAN tag corrupted by RCT round trip")
+	}
+
+	// The tag (TCI: vid=0, pcp=4) must be untouched on the wire.
+	tci := binary.BigEndian.Uint16(payload[14:16])
+	if gotVid, gotPcp := int(tci&0x0FFF), int((tci>>13)&0x07); gotVid != 0 || gotPcp != 4 {
+		t.Fatalf("priority tag not preserved: vid=%d pcp=%d, want vid=0 pcp=4", gotVid, gotPcp)
+	}
+}
+
+// TestVLAN0FilterSemantics: the interlink VLAN filter must treat a null
+// VLAN (VID 0) frame as tagged. Empty filter passes everything; a filter
+// of [10] blocks VID 0; an explicit [0] passes it (legacy IEC 61850
+// networks that whitelist the null VLAN).
+func TestVLAN0FilterSemantics(t *testing.T) {
+	src := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	base := ethFrame(src, [6]byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	v0 := vlanPCPFrame(base, 0, 4) // vid=0, pcp=4
+
+	// 1. Empty filter (default): VID 0 passes.
+	n, lanA, lanB, _ := newNode()
+	n.Config.VLANFilter = nil
+	n.handleInterlinkFrame(frameEvent{iface: "interlink", frame: v0, frameSz: len(v0)})
+	if len(lanA.frames) != 1 || len(lanB.frames) != 1 {
+		t.Fatalf("empty filter must pass VID 0, got A=%d B=%d", len(lanA.frames), len(lanB.frames))
+	}
+
+	// 2. Filter [10]: VID 0 is blocked (it is tagged, just null).
+	n2, lanA2, lanB2, _ := newNode()
+	n2.Config.VLANFilter = []int{10}
+	n2.handleInterlinkFrame(frameEvent{iface: "interlink", frame: v0, frameSz: len(v0)})
+	if len(lanA2.frames) != 0 || len(lanB2.frames) != 0 {
+		t.Fatalf("filter [10] must block VID 0, got A=%d B=%d", len(lanA2.frames), len(lanB2.frames))
+	}
+
+	// 3. Filter [0]: VID 0 passes (explicit null-VLAN whitelist).
+	n3, lanA3, lanB3, _ := newNode()
+	n3.Config.VLANFilter = []int{0}
+	n3.handleInterlinkFrame(frameEvent{iface: "interlink", frame: v0, frameSz: len(v0)})
+	if len(lanA3.frames) != 1 || len(lanB3.frames) != 1 {
+		t.Fatalf("filter [0] must pass VID 0, got A=%d B=%d", len(lanA3.frames), len(lanB3.frames))
+	}
+}
+
+// vlanPCPFrame tags a frame with the given VLAN ID and PCP (unlike
+// vlanTagFrame which sets PCP=0).
+func vlanPCPFrame(frame []byte, vid, pcp int) []byte {
+	out := make([]byte, 0, len(frame)+4)
+	out = append(out, frame[0:12]...) // dst + src
+	out = append(out, 0x81, 0x00)     // 802.1Q
+	tci := uint16(pcp&0x07)<<13 | uint16(vid&0x0FFF)
+	out = append(out, byte(tci>>8), byte(tci))
+	out = append(out, frame[12:len(frame)-4]...) // EtherType + payload
+	return out
+}
+
 var _ iface.PacketPort = (*memPort)(nil)
 
 // Ensure no stray timers leak between tests.

@@ -125,6 +125,13 @@ multicast_filter:
   #   "01"        — allow any multicast (matches first byte 0x01)
   #   ""          — (default) allow all multicast traffic
   #
+  # IEC 61850 (GOOSE/SV) traffic uses L2 multicast 01-0C-CD-01-xx
+  # (GOOSE, EtherType 0x88B8) and 01-0C-CD-04-xx (Sampled Values,
+  # 0x88BA). If your PRP network carries IEC 61850 traffic, either keep
+  # the filter empty or set it to "01-0C-CD" — a restrictive filter like
+  # "01-00-5E" (IPv4 multicast only) silently drops GOOSE/SV, breaking
+  # protection and metering IEDs.
+  #
   # Empty = no filtering. A malformed value is rejected at startup.
   first_octet: ""
 

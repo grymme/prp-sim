@@ -73,6 +73,24 @@ func (t *Table) Find(srcMAC string, seq int) bool {
 	return true
 }
 
+// FlushFor removes every duplicate-detection entry for a single source
+// MAC. Used when a peer node restarts: its supervision sequence regresses
+// and all previously tracked (src, seq) pairs must be forgotten, otherwise
+// the fresh low sequence numbers the restarted node emits would be
+// wrongly discarded as stale duplicates.
+func (t *Table) FlushFor(srcMAC string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	removed := 0
+	for k, e := range t.entries {
+		if e.SrcMAC == srcMAC {
+			delete(t.entries, k)
+			removed++
+		}
+	}
+	return removed
+}
+
 // Cleanup removes stale entries. Returns count of removed entries.
 func (t *Table) Cleanup() int {
 	now := time.Now()
