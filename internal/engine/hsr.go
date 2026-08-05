@@ -91,6 +91,45 @@ func IsHSRFrame(frame []byte) bool {
 	return GetEtherType(frame) == HSREtherType
 }
 
+// RewriteHSRPath returns a copy of the frame with the 4-bit PathId field
+// replaced. Used when forwarding a frame around the ring (path 0 -> 1).
+func RewriteHSRPath(frame []byte, path int) ([]byte, error) {
+	off, err := hsrTagOffset(frame)
+	if err != nil {
+		return nil, err
+	}
+	if len(frame) < off+HSRTagLen {
+		return nil, fmt.Errorf("frame too short for HSR tag: %d bytes", len(frame))
+	}
+	out := append([]byte(nil), frame...)
+	word := binary.BigEndian.Uint16(out[off : off+2])
+	word = (word & 0x0FFF) | (uint16(path&0x0F) << 12)
+	binary.BigEndian.PutUint16(out[off:off+2], word)
+	return out, nil
+}
+
+// StripHSR returns the original (untagged) Ethernet frame carried inside
+// an HSR frame: MAC header + [VLAN tag] + encap_proto + payload.
+func StripHSR(frame []byte) ([]byte, error) {
+	off, err := hsrTagOffset(frame)
+	if err != nil {
+		return nil, err
+	}
+	_, _, encap, payload, err := DecodeHSR(frame)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(frame)-HSRTagLen)
+	out = append(out, frame[:12]...)
+	if off > 14 {
+		// VLAN tag present between the MAC header and the HSR tag.
+		out = append(out, frame[12:off-2]...)
+	}
+	out = append(out, byte(encap>>8), byte(encap))
+	out = append(out, payload...)
+	return out, nil
+}
+
 // hsrTagOffset returns the byte offset where the HSR tag starts: after the
 // Ethernet header (14) and after any VLAN tag (18 with one tag).
 func hsrTagOffset(frame []byte) (int, error) {

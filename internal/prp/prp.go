@@ -48,6 +48,9 @@ type Node struct {
 	proxyTable        map[string]time.Time
 	proxyTableMu      sync.Mutex
 	proxyTableForget  time.Duration
+	// dropCounters counts discarded frames by reason (dup/own/path/
+	// filter/malformed) for the TUI and debugging.
+	dropCounters map[string]int
 	// now returns the current time; injectable for deterministic tests.
 	now func() time.Time
 }
@@ -383,11 +386,20 @@ func (n *Node) handleFrame(event frameEvent) {
 
 	switch event.iface {
 	case "lan_a", "lan_b":
-		// Incoming from PRP LANs - handle receive path
-		n.handleIncomingPRPFrame(event)
+		if n.IsHSRNode() {
+			// HSR ring port: tag-based ring forwarding.
+			n.handleIncomingHSRFrame(event)
+		} else {
+			// PRP LAN: RCT-based receive path.
+			n.handleIncomingPRPFrame(event)
+		}
 	case "interlink":
-		// Incoming from interlink (SAN in RedBox mode) - handle transmit path
-		n.handleInterlinkFrame(event)
+		if n.IsHSRNode() {
+			// SAN (or coupled PRP LAN) → ring.
+			n.handleHSRInterlinkFrame(event)
+		} else {
+			n.handleInterlinkFrame(event)
+		}
 	}
 }
 
@@ -666,28 +678,54 @@ func (n *Node) handleSupervisionFrame(event frameEvent) {
 	n.supervisionSeqs[sup.SrcMAC] = sup.Seq
 }
 
-// SendSupervisionFrame sends a PRP supervision frame on both LANs.
-// Each LAN copy carries an RCT with the correct LAN ID (0 for A, 1 for B)
-// and the same sequence number.
+// SendSupervisionFrame sends supervision frames appropriate to the node's
+// role:
+//   - prp-san: PRP supervision with RCT on both LANs.
+//   - hsr-san: HSR supervision (no RCT) on both ring ports.
+//   - hsr-prp: HSR supervision on the ring ports AND PRP supervision with
+//     RCT on the coupled PRP LAN (the two sides speak different
+//     supervision dialects; IEC 62439-3 §5.2.2.3.2 requires the RedBox to
+//     present each side with its own format).
 func (n *Node) SendSupervisionFrame() {
 	srcMAC := n.mac
 	if srcMAC == nil {
 		srcMAC = n.nodeMAC()
 	}
-
 	n.supSeq++
-	frameA := supervision.BuildRCTed(srcMAC, n.supSeq, 0)
-	frameB := supervision.BuildRCTed(srcMAC, n.supSeq, 1)
 
-	if _, err := n.LanA.Write(frameA); err != nil {
-		log.Printf("prp: failed to write supervision to LAN A: %v", err)
-	}
-	if _, err := n.LanB.Write(frameB); err != nil {
-		log.Printf("prp: failed to write supervision to LAN B: %v", err)
+	if !n.IsHSRNode() {
+		frameA := supervision.BuildRCTed(srcMAC, n.supSeq, 0)
+		frameB := supervision.BuildRCTed(srcMAC, n.supSeq, 1)
+		if _, err := n.LanA.Write(frameA); err != nil {
+			log.Printf("prp: failed to write supervision to LAN A: %v", err)
+		}
+		if _, err := n.LanB.Write(frameB); err != nil {
+			log.Printf("prp: failed to write supervision to LAN B: %v", err)
+		}
+		n.tracef("supervision frame (seq %d) sent on both LANs", n.supSeq)
+		return
 	}
 
-	if n.Config.Debug {
-		log.Printf("prp: supervision frame (seq %d) sent on both LANs", n.supSeq)
+	// HSR node: supervision on the ring carries the HSR path.
+	path := 0
+	if n.IsHSRPRPCoupling() {
+		path = (n.NetID() << 1) | n.LanID()
+	}
+	sup := supervision.BuildHSR(srcMAC, n.supSeq, path)
+	if _, err := n.LanA.Write(sup); err != nil {
+		log.Printf("prp: failed to write supervision to ring A: %v", err)
+	}
+	if _, err := n.LanB.Write(sup); err != nil {
+		log.Printf("prp: failed to write supervision to ring B: %v", err)
+	}
+	n.tracef("HSR supervision frame (seq %d, path %d) sent on ring", n.supSeq, path)
+
+	// hsr-prp: also announce on the coupled PRP LAN in PRP dialect.
+	if n.IsHSRPRPCoupling() && n.Interlink != nil {
+		lanFrame := supervision.BuildRCTed(srcMAC, n.supSeq, n.LanID())
+		if _, err := n.Interlink.Write(lanFrame); err != nil {
+			log.Printf("prp: failed to write supervision to coupled LAN: %v", err)
+		}
 	}
 }
 
