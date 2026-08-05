@@ -4,13 +4,13 @@
 //
 // It can run in these modes:
 //
-//	send    send GOOSE-like frames on one interface with a configurable
-//	        rate, count and VLAN tag. Every frame carries a payload with
-//	        {appid, seq, tx-nanos} for the receiver to deduplicate and
-//	        timestamp.
-//	recv    listen on one interface for the configured GOOSE appid,
-//	        report unique frames seen, duplicate frames, and round-trip
-//	        latency percentiles.
+//	send    send real GOOSE (IEC 61850-8-1) or Sampled Values (IEC 61850-9-2)
+//	        frames on one interface with a configurable rate, count, VLAN tag
+//	        and APPID. GOOSE carries a full ASN.1/BER APDU (gocbRef, stNum,
+//	        sqNum, allData...); SV carries ASDU with svID/smpCnt/sampl.
+//	recv    listen on one interface for the configured APPID, report unique
+//	        frames seen, duplicate frames, and round-trip latency percentiles
+//	        (GOOSE latency from the APDU UtcTime; SV from arrival time).
 //	ping    (default, when no --mode) send-then-receive echo: emits
 //	        'GOOSE-like echo' frames and reports loss + max latency.
 //
@@ -178,8 +178,8 @@ func assembleFrame(appid uint16, apdu []byte, vid, pcp int, et uint16) []byte {
 	header := make([]byte, payloadHeaderLen)
 	binary.BigEndian.PutUint16(header[0:2], appid)
 	binary.BigEndian.PutUint16(header[2:4], uint16(len(apdu)+8)) // Length = header + APDU; must be >=8
-	binary.BigEndian.PutUint16(header[4:6], 0) // Reserved 1
-	binary.BigEndian.PutUint16(header[6:8], 0) // Reserved 2
+	binary.BigEndian.PutUint16(header[4:6], 0)                   // Reserved 1
+	binary.BigEndian.PutUint16(header[6:8], 0)                   // Reserved 2
 	tagged := vid >= 0
 	var frame []byte
 	if tagged {
@@ -366,7 +366,7 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 		default:
 		}
 		sent++
-		stNum++ // new event: state increments
+		stNum++   // new event: state increments
 		sqNum = 1 // reset retransmission counter
 		frame := buildFrameEt(appid, stNum, sqNum, vid, pcp, et, dstMAC)
 		if err := sock.Send(frame); err != nil {
@@ -458,7 +458,11 @@ func recv(ifaceName string, appid uint16, dur time.Duration, loop bool) {
 		if !ok {
 			continue
 		}
-		_ = allData; _ = vid; _ = pcp; _ = smpCntVal; _ = appidVal
+		_ = allData
+		_ = vid
+		_ = pcp
+		_ = smpCntVal
+		_ = appidVal
 		key := fmt.Sprintf("%d|%d", stNum, sqNum)
 		s.noteFrame(key, txns)
 		tui.Update(stNum, allData, s.total, s.unique, s.dupes, 0, nil)

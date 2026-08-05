@@ -25,9 +25,9 @@ func encodeLength(length int) []byte {
 		lenBytes++
 		tmp >>= 8
 	}
-	b = append(b, byte(0x80 | lenBytes))
+	b = append(b, byte(0x80|lenBytes))
 	for i := lenBytes - 1; i >= 0; i-- {
-		b = append(b, byte((v >> (8 * i)) & 0xff))
+		b = append(b, byte((v>>(8*i))&0xff))
 	}
 	return b
 }

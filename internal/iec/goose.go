@@ -21,8 +21,8 @@ func BuildGOOSEAPDU(stNum uint16, sqNum uint16, t time.Time, test bool, confRev 
 	tlvList = append(tlvList, encodeTLV(0x87, Boolean(test)))
 	tlvList = append(tlvList, encodeTLV(0x88, Integer16(confRev)))
 	tlvList = append(tlvList, encodeTLV(0x89, Boolean(false))) // ndsCom false
-	tlvList = append(tlvList, encodeTLV(0x8a, []byte{0x01})) // numDatSetEntries = 1
-	tlvList = append(tlvList, encodeTLV(0xab, Boolean(test))) // allData Boolean toggled with state
+	tlvList = append(tlvList, encodeTLV(0x8a, []byte{0x01}))   // numDatSetEntries = 1
+	tlvList = append(tlvList, encodeTLV(0xab, Boolean(test)))  // allData Boolean toggled with state
 
 	// Assemble PDU: 0x61 (application, constructed, 1) + length + TLVs
 	payload := []byte{}

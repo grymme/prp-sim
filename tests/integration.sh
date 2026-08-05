@@ -239,7 +239,7 @@ if [ "$UNIQ" -lt 90 ]; then
     echo "FAIL: GOOSE loss too high (unique=$UNIQ of 100)"
     exit 1
 fi
-MAXLAT=$(echo "$TG" | grep '^recv:' | grep -o 'max=[0-9.]*[µm]s')
+MAXLAT=$(echo "$TG" | grep '^recv:' | grep -o 'max=[0-9.]*[µm]s' || true)
 echo "PASS: GOOSE transparency (unique=$UNIQ, dupes=$DUPES, $MAXLAT)"
 
 # --- Test 10: GOOSE during LAN A failure ---

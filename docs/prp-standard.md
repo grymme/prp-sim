@@ -289,6 +289,25 @@ For HSR simulation, use a separate HSR simulator.
 - **IEEE 1588**: Precision Time Protocol (PTP)
 - **Westermo WeOS Documentation**: Real-world PRP implementation reference
 
+## GOOSE / Sampled Values over PRP
+
+PRP is transparent to higher layers — a RedBox treats IEC 61850 traffic
+as ordinary Ethernet:
+
+- **GOOSE** (EtherType `0x88B8`) and **SV** (`0x88BA`) frames entering via
+  a SAN port are duplicated by the RedBox with an RCT trailer, exactly
+  like any other frame (see PRP Frame Format above). The APDU bytes are
+  untouched; Wireshark decodes them normally.
+- The `trafficgen` tool emits **real** GOOSE and SV APDUs:
+  - GOOSE: `0x61` PDU with `gocbRef`, `timeAllowedToLive`, `datSet`,
+    `goID`, `t` (8-byte UtcTime), `stNum`, `sqNum`, `test`, `confRev`,
+    `ndsCom`, `numDatSetEntries`, `allData` (BER-encoded).
+  - SV: `0x60` APDU with `noASDU`, `security`, and one ASDU (`svID`,
+    `smpCnt`, `confRev`, `smpSynch`, `smpRate`, `sampl`).
+- GOOSE `stNum` increments on state change, `sqNum` per retransmission;
+  SV `smpCnt` increments per frame (mod 4096). The subscriber deduplicates
+  on these keys to report exactly-once delivery across the redundant LANs.
+
 ## Further Reading
 
 - [Architecture](architecture.md) - System design details

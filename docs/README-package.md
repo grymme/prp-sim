@@ -33,8 +33,11 @@ traffic generator for testing against real substation gear.
                               └──────── LAN-B ───────────┘
 ```
 
-4. Start the nodes. Open the **IED Subscriber** console: it prints a live
-   summary (`unique=` / `dupes=`) — zero duplicates is the PRP proof.
+4. Start the nodes. Open the **IED Subscriber** console: it shows a live
+   split-screen stats view — PRP-level counters (frames, duplicates, RCT
+   errors, VLAN tags, supervision) on top, GOOSE/SV state (stNum, sqNum,
+   allData, latency) below. `unique=` / `dupes=` — zero duplicates is the
+   PRP proof. Open the **aux console** (port 5000) for a shell.
 
 ### IEC 61850 IED node settings
 
@@ -50,8 +53,15 @@ Both IED appliances are configurable via per-node environment variables
 | `IEC_VID` | `0` | VLAN ID; 0 = null VLAN + priority tagging (IEC 61850 legacy default) |
 | `IEC_PCP` | `4` | 802.1Q priority bits |
 | `IEC_MCAST` | per `IEC_ET` | destination MAC override |
+| `IEC_GCB` | `LLN0$GO$gcb0` | GOOSE control-block reference (`gocbRef`) |
+| `IEC_DSET` | `LLN0$dataset` | GOOSE dataset reference (`datSet`) |
+| `IEC_GOID` | `LLN0$GO$gcb0` | GOOSE ID (`goID`) |
+| `IEC_CONFREV` | `1` | configuration revision (`confRev`) |
+| `IEC_SVID` | `MU01` | SV `svID` (subscriber filters on this) |
+| `IEC_STEVENTS` | `10` | GOOSE state changes per N events (stNum++) |
 
-Publisher and subscriber must share the same `IEC_APPID`.
+Publisher and subscriber must share the same `IEC_APPID` (and, for SV,
+`IEC_SVID`).
 
 ---
 
@@ -123,6 +133,22 @@ trafficgen-windows-amd64.exe --mode send --iface 1 --et sv --appid 0x4001 --rate
 from `--list-devices`, or a substring of the friendly NIC description.
 
 Run from an elevated prompt if packet send fails with an access error.
+
+### Real IEC 61850 on the wire
+
+The generator emits **real** GOOSE (IEC 61850-8-1) and Sampled Values
+(IEC 61850-9-2) APDUs, so Wireshark decodes the full protocol tree
+(GOOSE: gocbRef, timeAllowedToLive, stNum/sqNum, allData; SV: svID,
+smpCnt, smpRate, sampl) — and any real IED can subscribe.
+
+- GOOSE `stNum` increments on each state change; `sqNum` per retransmission.
+- SV `smpCnt` increments per frame (mod 4096).
+- `--burst` sends GOOSE-style retransmission bursts (2, 4, 8, 16 … ms)
+  like a real IED; each retransmission carries a new `sqNum`.
+
+In the GNS3 console both nodes show a live split-screen TUI
+(PRP-level + GOOSE/SV-level stats); the aux console (telnet port 5000)
+still gives you a shell.
 
 ---
 

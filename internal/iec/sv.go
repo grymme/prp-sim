@@ -1,22 +1,19 @@
 package iec
 
-
-
-
 // BuildSVAPDU creates a real IEC 61850-9-2 SV APDU (0x60).
 func BuildSVAPDU(smpCnt uint16, confRev uint16, svID string) []byte {
 	tlvList := [][]byte{}
 	tlvList = append(tlvList, encodeTLV(0x80, []byte{0x01, 0x01, 0x01})) // noASDU = 1
-	tlvList = append(tlvList, encodeTLV(0x81, []byte{0x00, 0x00})) // security = 0x0000
+	tlvList = append(tlvList, encodeTLV(0x81, []byte{0x00, 0x00}))       // security = 0x0000
 
 	// ASDU (0xa2) sequence: svID(80), smpCnt(81), confRev(82), smpSynch(83), smpRate(84), sampl(85)
 	asduTlv := [][]byte{}
 	asduTlv = append(asduTlv, encodeTLV(0x80, String(svID)))
 	asduTlv = append(asduTlv, encodeTLV(0x81, Integer16(smpCnt)))
 	asduTlv = append(asduTlv, encodeTLV(0x82, Integer16(confRev)))
-	asduTlv = append(asduTlv, encodeTLV(0x83, []byte{0x00})) // smpSynch = 0 (local)
+	asduTlv = append(asduTlv, encodeTLV(0x83, []byte{0x00}))    // smpSynch = 0 (local)
 	asduTlv = append(asduTlv, encodeTLV(0x84, Integer16(4800))) // smpRate = 4800 Hz (example)
-	asduTlv = append(asduTlv, encodeTLV(0x85, Integer16(0))) // sampl int32 value
+	asduTlv = append(asduTlv, encodeTLV(0x85, Integer16(0)))    // sampl int32 value
 
 	asduPayload := []byte{}
 	for _, tlv := range asduTlv {
