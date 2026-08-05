@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"prp-gns3/internal/iec"
+	"prp-gns3/internal/tui"
 )
 
 const (
@@ -346,6 +347,8 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 	defer sock.Close()
 
 	fmt.Printf("send: %d frames @ %.0f Hz, vid=%d pcp=%d, burst=%v, et=0x%04x\n", count, rate, vid, pcp, burst, et)
+	tui.Start("publisher", ifaceName, appid)
+	defer tui.Stop()
 	start := time.Now()
 	stNum := uint16(1)
 	sqNum := uint16(1)
@@ -370,6 +373,7 @@ func send(ifaceName string, appid uint16, count int, rate float64, vid, pcp int,
 			fmt.Fprintf(os.Stderr, "send: %v\n", err)
 			os.Exit(1)
 		}
+		tui.Update(stNum, false, sent, sent, 0, 0, nil)
 		if burst {
 			// Retransmit burst: 2,4,8,16..ms — each with its own seq.
 			d := 2 * time.Millisecond
@@ -420,6 +424,8 @@ func recv(ifaceName string, appid uint16, dur time.Duration, loop bool) {
 		fmt.Printf(" for %s", dur)
 	}
 	fmt.Println()
+	tui.Start("subscriber", ifaceName, appid)
+	defer tui.Stop()
 	s := &stats{}
 	buf := make([]byte, 2048)
 	stop := stopChan()
@@ -455,6 +461,7 @@ func recv(ifaceName string, appid uint16, dur time.Duration, loop bool) {
 		_ = allData; _ = vid; _ = pcp; _ = smpCntVal; _ = appidVal
 		key := fmt.Sprintf("%d|%d", stNum, sqNum)
 		s.noteFrame(key, txns)
+		tui.Update(stNum, allData, s.total, s.unique, s.dupes, 0, nil)
 		s.noteTagged(vid, pcp)
 	}
 	s.report("recv")

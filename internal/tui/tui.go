@@ -5,20 +5,29 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"os"
 )
 
+// render draws the full split-screen view into w.
+func render(w io.Writer, role string, ifaceName string, appid uint16, stNum uint16, allData bool, total, unique, dupes int, latencyMs int64, errors []string) {
+	fmt.Fprintf(w, "\033[2J\033[H")
+	fmt.Fprintf(w, "=== PRP IED TUI === role=%s iface=%s appid=0x%04x\n", role, ifaceName, appid)
+	fmt.Fprintf(w, "=== PRP-level === LAN-A/B frames | RCT errors | VLAN tags | supervision\n")
+	fmt.Fprintf(w, "=== GOOSE/SV-level === stNum=%d allData=%v total=%d unique=%d dupes=%d lat=%dms\n",
+		stNum, allData, total, unique, dupes, latencyMs)
+	fmt.Fprintf(w, "=== Last 5 malformed/rejected ===\n")
+	for _, e := range errors {
+		fmt.Fprintf(w, "  %s\n", e)
+	}
+}
+
 func Start(role string, ifaceName string, appid uint16) {
-	fmt.Printf("\033[2J\033[H") // clear + home
-	fmt.Printf("=== PRP IED TUI === role=%s iface=%s appid=0x%04x\n", role, ifaceName, appid)
-	fmt.Println("=== PRP-level === LAN-A/B frames | RCT errors | VLAN tags | supervision")
-	fmt.Println("=== GOOSE/SV-level === stNum | allData | latency p50/p95/max | errors")
-	fmt.Println("=== Last 5 malformed/rejected ===")
+	render(os.Stdout, role, ifaceName, appid, 0, false, 0, 0, 0, 0, nil)
 }
 
 func Update(stNum uint16, allData bool, total, unique, dupes int, latencyMs int64, errors []string) {
-	fmt.Printf("\033[11;1H=== GOOSE === stNum=%d allData=%v total=%d unique=%d dupes=%d lat=%dms\n",
-		stNum, allData, total, unique, dupes, latencyMs)
-	fmt.Printf("=== Errors === %v\n", errors)
+	render(os.Stdout, "subscriber", "", 0, stNum, allData, total, unique, dupes, latencyMs, errors)
 }
 
 func Stop() {
