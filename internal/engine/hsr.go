@@ -1,0 +1,110 @@
+package engine
+
+import (
+	"encoding/binary"
+	"fmt"
+)
+
+// HSR (High-availability Seamless Redundancy) framing, per IEC 62439-3 and
+// the Linux kernel implementation (net/hsr/hsr_main.h).
+//
+// The HSR tag is 6 bytes, inserted after the EtherType — and after any
+// VLAN tag — and before the payload:
+//
+//	+------------+---------------+----------------+----+----+
+//	| Path (4b)  | LSDU size(12b)| sequence nr(16)| ttl| pad|
+//	+------------+---------------+----------------+----+----+
+//	    byte 14-15 (path_and_LSDU_size)   byte 16-17   18  19
+//
+//   - path occupies the 4 most significant bits of the first 16-bit word
+//     (path << 12), LSDU size the low 12 bits (mask 0x0FFF).
+//   - LSDU size = length of the frame excluding the Ethernet header (and
+//     any VLAN tag), i.e. HSR tag (6) + payload.
+//   - ttl/pad bytes are transmitted as zero by the kernel.
+//
+// The EtherType of the tag is 0x892F.
+
+const (
+	// HSREtherType is the HSR EtherType (0x892f).
+	HSREtherType = 0x892f
+	// HSRTagLen is the size of the HSR tag in bytes.
+	HSRTagLen = 6
+	// HSRV1SupLSDUSize is the fixed LSDU size of HSR supervision frames
+	// (kernel HSR_V1_SUP_LSDUSIZE).
+	HSRV1SupLSDUSize = 52
+)
+
+// EncodeHSR builds an HSR frame body: EtherType 0x892F + 6-byte tag +
+// payload. The LSDU size field holds the actual payload length (6 + len),
+// as in the kernel; NIC padding (if any) comes after the payload and is
+// sliced off on decode using the LSDU field.
+//
+// path is the 4-bit PathId (0 in pure HSR; (NetId<<1)|LanId for HSR-PRP).
+func EncodeHSR(payload []byte, path int, seq uint16) []byte {
+	lsdu := HSRTagLen + len(payload)
+
+	tag := make([]byte, HSRTagLen)
+	word := (uint16(path&0x0F) << 12) | (uint16(lsdu) & 0x0FFF)
+	binary.BigEndian.PutUint16(tag[0:2], word)
+	binary.BigEndian.PutUint16(tag[2:4], seq)
+	// bytes 4-5 (ttl, pad) are zero.
+
+	out := make([]byte, 2+HSRTagLen+len(payload))
+	binary.BigEndian.PutUint16(out[0:2], HSREtherType)
+	copy(out[2:8], tag)
+	copy(out[8:], payload)
+	return out
+}
+
+// DecodeHSR validates and parses a frame carrying an HSR tag. It expects
+// the frame to start with a 14-byte Ethernet header (or 18 with one VLAN
+// tag), followed by the HSR tag, and returns (path, seq, payload, error).
+// The payload is sliced by the LSDU size field, so any trailing wire
+// padding is stripped.
+func DecodeHSR(frame []byte) (path, seq int, payload []byte, err error) {
+	off, err := hsrTagOffset(frame)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	if len(frame) < off+HSRTagLen {
+		return 0, 0, nil, fmt.Errorf("frame too short for HSR tag: %d bytes", len(frame))
+	}
+	word := binary.BigEndian.Uint16(frame[off : off+2])
+	path = int(word >> 12)
+	lsdu := int(word & 0x0FFF)
+	seq = int(binary.BigEndian.Uint16(frame[off+2 : off+4]))
+
+	// LSDU size = tag + payload (kernel definition). It must not exceed
+	// the frame; excess bytes are wire padding.
+	if lsdu < HSRTagLen || off+lsdu > len(frame) {
+		return 0, 0, nil, fmt.Errorf("HSR LSDU size out of range: %d (frame %d)", lsdu, len(frame))
+	}
+	return path, seq, frame[off+HSRTagLen : off+lsdu], nil
+}
+
+// IsHSRFrame reports whether the frame carries an HSR tag (EtherType
+// 0x892F after any VLAN tag).
+func IsHSRFrame(frame []byte) bool {
+	return GetEtherType(frame) == HSREtherType
+}
+
+// hsrTagOffset returns the byte offset where the HSR tag starts: after the
+// Ethernet header (14) and after any VLAN tag (18 with one tag).
+func hsrTagOffset(frame []byte) (int, error) {
+	if len(frame) < 14 {
+		return 0, fmt.Errorf("frame too short: %d bytes", len(frame))
+	}
+	off := 12
+	et := binary.BigEndian.Uint16(frame[off : off+2])
+	if et == 0x8100 || et == 0x88a8 {
+		if len(frame) < 18 {
+			return 0, fmt.Errorf("frame too short for VLAN-tagged HSR: %d bytes", len(frame))
+		}
+		off = 16
+		et = binary.BigEndian.Uint16(frame[off : off+2])
+	}
+	if et != HSREtherType {
+		return 0, fmt.Errorf("not an HSR frame: ethertype 0x%04x", et)
+	}
+	return off + 2, nil
+}
