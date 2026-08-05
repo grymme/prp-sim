@@ -51,6 +51,17 @@ type Node struct {
 	// dropCounters counts discarded frames by reason (dup/own/path/
 	// filter/malformed) for the TUI and debugging.
 	dropCounters map[string]int
+	// counters tracks per-port received/forwarded frame counts.
+	counters struct {
+		mu       sync.Mutex
+		lanAIn   uint64
+		lanBIn   uint64
+		lanAOut  uint64
+		lanBOut  uint64
+		interIn  uint64
+		interOut uint64
+		supSent  uint64
+	}
 	// now returns the current time; injectable for deterministic tests.
 	now func() time.Time
 }
@@ -70,11 +81,11 @@ type Config struct {
 	InterlinkInterface string
 	// LanID ("A"/"B") and NetID (1-6) describe the coupled PRP LAN for
 	// the hsr-prp role; empty/0 otherwise.
-	LanID            string
-	NetID            int
-	PRPID            int
-	TrailerEnabled   bool
-	Debug            bool
+	LanID          string
+	NetID          int
+	PRPID          int
+	TrailerEnabled bool
+	Debug          bool
 
 	// ForwardAll: when true (default), the RedBox forwards all LAN frames
 	// to the interlink; when false, only frames destined to SANs learned
@@ -155,7 +166,7 @@ func NewNode(cfg *Config) *Node {
 		proxyTableForget:  time.Duration(proxyForgetMs) * time.Millisecond,
 		supervisionForget: time.Duration(supForgetMs) * time.Millisecond,
 		supervisionSeqs:   make(map[string]uint16),
-		now:              time.Now,
+		now:               time.Now,
 	}
 }
 
@@ -406,6 +417,7 @@ func (n *Node) handleFrame(event frameEvent) {
 // handleIncomingPRPFrame processes frames arriving from PRP LANs.
 // Flow: LAN → check RCT → dup detection → strip RCT → forward to interlink
 func (n *Node) handleIncomingPRPFrame(event frameEvent) {
+	n.countFrame(event.iface, "in")
 	if n.Config.Debug {
 		log.Printf("prp: incoming PRP frame on %s (%d bytes)", event.iface, event.frameSz)
 	}
@@ -414,6 +426,7 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	if !engine.IsPRPFrame(event.frame) {
 		// No RCT trailer - this is a non-PRP frame on the PRP LAN
 		// Log and discard
+		n.noteDrop("malformed")
 		if n.Config.Debug {
 			log.Printf("prp: frame without RCT on %s, discarding", event.iface)
 		}
@@ -436,6 +449,7 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 		expected = 1
 	}
 	if lanID != expected {
+		n.noteDrop("path")
 		if n.Config.Debug {
 			log.Printf("prp: lan_id %d on %s (expected %d), dropping", lanID, event.iface, expected)
 		}
@@ -456,6 +470,7 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 
 	// Check for duplicate
 	if n.dupTable.Find(srcMAC, seq) {
+		n.noteDrop("dup")
 		if n.Config.Debug {
 			log.Printf("prp: duplicate frame from %s seq=%d on %s, discarding", srcMAC, seq, event.iface)
 		}
@@ -465,11 +480,10 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 	// Accept the frame - add to node table
 	n.dupTable.InsertWithExpiry(srcMAC, seq, lanID, n.entryForgetMs())
 
-	// Forward based on role
-	if n.Config.Role == "redbox" && n.Interlink != nil {
-		// RedBox: forward to interlink, subject to learned-proxy and
-		// multicast filtering.
+	// Forward based on role (prp-san is the legacy "redbox" path).
+	if !n.IsHSRNode() && n.Interlink != nil {
 		if !n.shouldForwardToInterlink(payload) {
+			n.noteDrop("filter")
 			if n.Config.Debug {
 				log.Printf("prp: frame from %s not forwarded to interlink (filtered)", srcMAC)
 			}
@@ -478,6 +492,8 @@ func (n *Node) handleIncomingPRPFrame(event frameEvent) {
 		_, err := n.Interlink.Write(payload)
 		if err != nil {
 			log.Printf("prp: failed to write to interlink: %v", err)
+		} else {
+			n.countFrame("interlink", "out")
 		}
 		if n.Config.Debug {
 			log.Printf("prp: forwarded frame (%d bytes) to interlink", len(payload))
@@ -587,6 +603,7 @@ func parseMulticastPattern(pattern string) []byte {
 // Both LAN copies MUST carry the same sequence number (PRP duplicate
 // detection on the receiver keys on (src MAC, seq)).
 func (n *Node) handleInterlinkFrame(event frameEvent) {
+	n.countFrame("interlink", "in")
 	if n.Config.Debug {
 		log.Printf("prp: interlink frame (%d bytes)", event.frameSz)
 	}
@@ -594,6 +611,7 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	// VLAN filter: when configured, only the listed VLAN IDs pass.
 	if len(n.Config.VLANFilter) > 0 {
 		if vlanID, tagged := engine.GetVLANID(event.frame); !tagged || !containsInt(n.Config.VLANFilter, vlanID) {
+			n.noteDrop("filter")
 			if n.Config.Debug {
 				log.Printf("prp: interlink frame VLAN %d filtered out", vlanID)
 			}
@@ -616,6 +634,8 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 		// No RCT - just forward to both LANs as-is
 		n.LanA.Write(event.frame)
 		n.LanB.Write(event.frame)
+		n.countFrame("lan_a", "out")
+		n.countFrame("lan_b", "out")
 		return
 	}
 
@@ -629,9 +649,13 @@ func (n *Node) handleInterlinkFrame(event frameEvent) {
 	// Send to both LANs
 	if _, err := n.LanA.Write(lanAFrame); err != nil {
 		log.Printf("prp: failed to write to LAN A: %v", err)
+	} else {
+		n.countFrame("lan_a", "out")
 	}
 	if _, err := n.LanB.Write(lanBFrame); err != nil {
 		log.Printf("prp: failed to write to LAN B: %v", err)
+	} else {
+		n.countFrame("lan_b", "out")
 	}
 
 	if n.Config.Debug {
@@ -702,6 +726,9 @@ func (n *Node) SendSupervisionFrame() {
 		if _, err := n.LanB.Write(frameB); err != nil {
 			log.Printf("prp: failed to write supervision to LAN B: %v", err)
 		}
+		n.counters.mu.Lock()
+		n.counters.supSent++
+		n.counters.mu.Unlock()
 		n.tracef("supervision frame (seq %d) sent on both LANs", n.supSeq)
 		return
 	}
@@ -718,6 +745,9 @@ func (n *Node) SendSupervisionFrame() {
 	if _, err := n.LanB.Write(sup); err != nil {
 		log.Printf("prp: failed to write supervision to ring B: %v", err)
 	}
+	n.counters.mu.Lock()
+	n.counters.supSent++
+	n.counters.mu.Unlock()
 	n.tracef("HSR supervision frame (seq %d, path %d) sent on ring", n.supSeq, path)
 
 	// hsr-prp: also announce on the coupled PRP LAN in PRP dialect.

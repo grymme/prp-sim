@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -99,10 +100,53 @@ func main() {
 		}()
 	}
 
+	// Periodic live status line on the console (a full-screen TUI would
+	// fight with prpd's own log output over the GNS3 telnet console).
+	// Show per-port counters, drop reasons and the HSR coupling identity.
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				st := node.Snapshot()
+				role := st.Role
+				if role == "hsr-prp" {
+					role = fmt.Sprintf("hsr-prp (NetId %d, LanId %s)", st.NetID, st.LanID)
+				}
+				fmt.Printf("status: role=%s ringA in=%d out=%d ringB in=%d out=%d inter in=%d out=%d sup=%d ntable=%d drops=%v\n",
+					role,
+					st.LanAIn, st.LanAOut, st.LanBIn, st.LanBOut,
+					st.InterIn, st.InterOut, st.SupSent, st.DupTableSize,
+					formatDrops(st.Drops))
+			case <-node.StopChan():
+				return
+			}
+		}
+	}()
+
 	// Wait for signal
 	<-sig
 	fmt.Println("prpd: shutting down")
 	node.Stop()
+}
+
+// formatDrops renders the drop-reason counters as "dup=1 own=2 ...".
+func formatDrops(drops map[string]int) string {
+	if len(drops) == 0 {
+		return "-"
+	}
+	keys := []string{"dup", "own", "path", "filter", "malformed"}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if v, ok := drops[k]; ok && v > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, v))
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
 }
 
 // applyStaticIPs assigns the optional per-port IPv4 addresses from the

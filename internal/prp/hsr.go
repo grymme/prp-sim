@@ -38,10 +38,71 @@ func (n *Node) noteDrop(reason string) {
 	n.dropCounters[reason]++
 }
 
+// countFrame bumps the per-port traffic counters.
+func (n *Node) countFrame(port, dir string) {
+	n.counters.mu.Lock()
+	defer n.counters.mu.Unlock()
+	switch port + "/" + dir {
+	case "lan_a/in":
+		n.counters.lanAIn++
+	case "lan_b/in":
+		n.counters.lanBIn++
+	case "lan_a/out":
+		n.counters.lanAOut++
+	case "lan_b/out":
+		n.counters.lanBOut++
+	case "interlink/in":
+		n.counters.interIn++
+	case "interlink/out":
+		n.counters.interOut++
+	}
+}
+
+// Status is a snapshot of the node's live counters for the console TUI.
+type Status struct {
+	Role         string
+	LanID        string // "A"/"B" for hsr-prp, "" otherwise
+	NetID        int
+	LanAIn       uint64
+	LanBIn       uint64
+	LanAOut      uint64
+	LanBOut      uint64
+	InterIn      uint64
+	InterOut     uint64
+	SupSent      uint64
+	DupTableSize int
+	Drops        map[string]int
+}
+
+// Snapshot returns a consistent view of the node's counters.
+func (n *Node) Snapshot() Status {
+	n.counters.mu.Lock()
+	st := Status{
+		Role:         n.Config.Role,
+		LanID:        n.Config.LanID,
+		NetID:        n.Config.NetID,
+		LanAIn:       n.counters.lanAIn,
+		LanBIn:       n.counters.lanBIn,
+		LanAOut:      n.counters.lanAOut,
+		LanBOut:      n.counters.lanBOut,
+		InterIn:      n.counters.interIn,
+		InterOut:     n.counters.interOut,
+		SupSent:      n.counters.supSent,
+		DupTableSize: n.dupTable.Size(),
+	}
+	n.counters.mu.Unlock()
+	st.Drops = make(map[string]int, len(n.dropCounters))
+	for k, v := range n.dropCounters {
+		st.Drops[k] = v
+	}
+	return st
+}
+
 // handleIncomingHSRFrame processes a frame arriving on a ring port.
 // Flow: decode tag → own-frame discard → dup detection → forward to the
 // other ring port (path 0→1) → deliver to the interlink unless duplicate.
 func (n *Node) handleIncomingHSRFrame(event frameEvent) {
+	n.countFrame(event.iface, "in")
 	path, seq, encap, payload, err := engine.DecodeHSR(event.frame)
 	if err != nil {
 		n.tracef("HSR frame on %s: %v", event.iface, err)
@@ -84,6 +145,7 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 			if _, err := port.Write(fwd); err != nil {
 				n.tracef("HSR forward to %s failed: %v", other, err)
 			} else {
+				n.countFrame(other, "out")
 				n.tracef("HSR frame from %s (seq %d) forwarded to %s (path 1)", event.iface, seq, other)
 			}
 		}
@@ -126,6 +188,8 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 	}
 	if _, err := n.Interlink.Write(original); err != nil {
 		n.tracef("SAN write failed: %v", err)
+	} else {
+		n.countFrame("interlink", "out")
 	}
 	_ = encap
 }
@@ -134,6 +198,7 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 // add an HSR tag (path 0 for hsr-san, (NetId<<1)|LanId for hsr-prp) and
 // send it on both ring ports with a fresh sequence number.
 func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
+	n.countFrame("interlink", "in")
 	srcMAC := engine.GetSrcMAC(event.frame)
 
 	// Learn the SAN source so we can later decide which ring frames to
@@ -169,9 +234,13 @@ func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 
 	if _, err := n.LanA.Write(body); err != nil {
 		n.tracef("ring A write failed: %v", err)
+	} else {
+		n.countFrame("lan_a", "out")
 	}
 	if _, err := n.LanB.Write(body); err != nil {
 		n.tracef("ring B write failed: %v", err)
+	} else {
+		n.countFrame("lan_b", "out")
 	}
 	n.tracef("interlink frame from %s injected into ring (path %d)", srcMAC, path)
 }
@@ -184,6 +253,8 @@ func (n *Node) couplingToPRP(frame []byte, payload []byte, seq int) {
 	rct := engine.EncodeRCT(payload, uint16(seq), n.LanID())
 	if _, err := n.Interlink.Write(rct); err != nil {
 		n.tracef("coupling LAN write failed: %v", err)
+	} else {
+		n.countFrame("interlink", "out")
 	}
 	n.tracef("ring frame (seq %d) delivered to PRP LAN %d", seq, n.LanID())
 }
