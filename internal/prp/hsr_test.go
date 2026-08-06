@@ -624,3 +624,30 @@ func TestHSRRingMemberFilterPRP(t *testing.T) {
 		t.Errorf("multicast not delivered to PRP LAN (%d frames)", len(inter.frames))
 	}
 }
+
+// TestHSRRingMemberLearnedFromDataFrame: the kernel learns ring nodes
+// from ANY HSR frame on a ring port (hsr_get_node), not just supervision.
+// A member that has only sent data (no supervision yet) must still be
+// filtered from the very first frame.
+func TestHSRRingMemberLearnedFromDataFrame(t *testing.T) {
+	n, _, _, inter := hsrNode("hsr-san")
+	n.dupTable.Cleanup()
+
+	// Member sends one data frame on the ring; this must learn it.
+	member := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xAA}
+	f := hsrFrame(member, 0, 1)
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_b", frame: f, frameSz: len(f)})
+	// The member's own broadcast frame was (correctly) delivered to the
+	// SAN — clear it before checking the filter.
+	inter.drain()
+
+	// Now unicast TO the member must be filtered, even though the member
+	// has never sent a supervision frame.
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBB}
+	frame := hsrFrame(src, 0, 2)
+	copy(frame[0:6], member[:])
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+	if len(inter.frames) != 0 {
+		t.Errorf("unicast to data-learned ring member delivered to SAN (%d frames)", len(inter.frames))
+	}
+}

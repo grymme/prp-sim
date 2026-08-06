@@ -19,6 +19,7 @@ package prp
 
 import (
 	"log"
+	"time"
 
 	"prp-gns3/internal/engine"
 )
@@ -131,6 +132,7 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 		return
 	}
 	n.dupTable.InsertWithExpiry(srcMAC, seq, 0, n.entryForgetMs())
+	n.learnRingMember(srcMAC)
 
 	// Forward around the ring: every received ring frame is forwarded to
 	// the other ring port (mirrors the kernel hsr_forward_skb, which
@@ -383,6 +385,19 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// learnRingMember records srcMAC as a local ring member. Mirrors the
+// kernel's hsr_get_node, which creates/refreshes a node_db entry for
+// EVERY HSR frame received on a ring port — not only supervision — so a
+// restarted node is filtered from its first data frame.
+func (n *Node) learnRingMember(srcMAC string) {
+	n.ringMembersMu.Lock()
+	if n.ringMembers == nil {
+		n.ringMembers = make(map[string]time.Time)
+	}
+	n.ringMembers[srcMAC] = n.nowf()
+	n.ringMembersMu.Unlock()
 }
 
 // unicastToRingMember reports whether dst is a unicast MAC address of a
