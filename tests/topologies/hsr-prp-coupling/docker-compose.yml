@@ -29,9 +29,9 @@ services:
     volumes:
       - ../../configs/hsr-redbox-d.yaml:/etc/prp/config.yaml
     networks:
-      ring12:
+      ringda:
         interface_name: eth0
-      ring21:
+      ringed:
         interface_name: eth1
       san-net-r1:
         interface_name: eth2
@@ -41,9 +41,9 @@ services:
     volumes:
       - ../../configs/hsr-redbox-e.yaml:/etc/prp/config.yaml
     networks:
-      ring12:
+      ringbe:
         interface_name: eth0
-      ring21:
+      ringed:
         interface_name: eth1
       san-net-r2:
         interface_name: eth2
@@ -53,9 +53,9 @@ services:
     volumes:
       - ../../configs/hsr-prp-a.yaml:/etc/prp/config.yaml
     networks:
-      ring12:
+      ringab:
         interface_name: eth0
-      ring21:
+      ringda:
         interface_name: eth1
       lan-a:
         interface_name: eth2
@@ -65,9 +65,9 @@ services:
     volumes:
       - ../../configs/hsr-prp-b.yaml:/etc/prp/config.yaml
     networks:
-      ring12:
+      ringbe:
         interface_name: eth0
-      ring21:
+      ringab:
         interface_name: eth1
       lan-b:
         interface_name: eth2
@@ -129,8 +129,10 @@ services:
         interface_name: eth0
 
 networks:
-  ring12:
-  ring21:
+  ringda:
+  ringab:
+  ringbe:
+  ringed:
   lan-a:
   lan-b:
   san-net-r1:
