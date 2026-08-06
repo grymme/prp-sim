@@ -18,6 +18,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch tags: main-branch builds resolve the version via
+          # `git describe --tags` (default depth-1 clones have no tags).
+          fetch-depth: 0
 
       - name: Run tests
         run: go mod download && go test ./...
