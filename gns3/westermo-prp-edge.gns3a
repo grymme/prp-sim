@@ -1,6 +1,6 @@
 {
   "appliance_id": "c3d8e4f0-8b1a-4f2c-a123-456789edged",
-  "name": "PRP Node (edge)",
+  "name": "PRP Node Edge",
   "category": "guest",
   "description": "PRP (IEC 62439-3) RedBox simulation node for GNS3 — edge build (rolling main; use PRP Node for the latest release).",
   "vendor_name": "Arctic3D AB",
