@@ -52,6 +52,9 @@ type RoleInfo struct {
 	// InterlinkIsSAN is true when the interlink is a plain Ethernet SAN
 	// port (prp-san, hsr-san).
 	InterlinkIsSAN bool
+	// InterlinkIsHSR is true when the interlink carries HSR-tagged
+	// traffic to another HSR ring (hsr-hsr, QuadBox).
+	InterlinkIsHSR bool
 }
 
 func infoFor(r Role) RoleInfo {
@@ -63,7 +66,7 @@ func infoFor(r Role) RoleInfo {
 	case RoleHSRHSR:
 		// QuadBox: ring ports are HSR; the interlink connects to another
 		// HSR ring (forwarded as HSR-tagged traffic).
-		return RoleInfo{Role: r, RedundancyPortsAreHSR: true}
+		return RoleInfo{Role: r, RedundancyPortsAreHSR: true, InterlinkIsHSR: true}
 	default: // prp-san
 		return RoleInfo{Role: RolePRPSan, InterlinkIsSAN: true}
 	}
@@ -84,6 +87,9 @@ func (n *Node) IsHSRNode() bool { return n.roleInfo().RedundancyPortsAreHSR }
 
 // IsHSRPRPCoupling reports whether the interlink couples to a PRP LAN.
 func (n *Node) IsHSRPRPCoupling() bool { return n.roleInfo().CoupledToPRP }
+
+// IsHSRHSR reports whether the node couples two HSR rings (QuadBox).
+func (n *Node) IsHSRHSR() bool { return n.roleInfo().InterlinkIsHSR }
 
 // LanID returns the configured PRP LAN id for the interlink (hsr-prp);
 // 0 for LAN A, 1 for LAN B. Falls back to LAN A for non-coupling roles.

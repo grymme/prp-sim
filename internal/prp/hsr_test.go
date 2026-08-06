@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"prp-gns3/internal/engine"
+	"prp-gns3/internal/supervision"
 )
 
 // hsrNode builds an HSR-capable test node with in-memory ports.
@@ -236,5 +237,141 @@ func TestHSRFakeClock(t *testing.T) {
 	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: hsr, frameSz: len(hsr)})
 	if len(ringB.frames) != 1 {
 		t.Errorf("expected forward after expiry, got %d", len(ringB.frames))
+	}
+}
+
+// hsrhsrNode builds an hsr-hsr (QuadBox) test node.
+func hsrhsrNode() (*Node, *memPort, *memPort, *memPort) {
+	lanA := &memPort{name: "ring1_a"}
+	lanB := &memPort{name: "ring1_b"}
+	inter := &memPort{name: "interlink"}
+	n := NewNode(&Config{
+		NodeName:       "quad",
+		Role:           "hsr-hsr",
+		TrailerEnabled: true,
+		ForwardAll:     true,
+	})
+	n.LanA = lanA
+	n.LanB = lanB
+	n.Interlink = inter
+	n.SetNodeMAC([]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x01})
+	return n, lanA, lanB, inter
+}
+
+// hsrFrame builds an HSR-tagged frame with the given src and path/seq.
+func hsrFrame(srcMAC [6]byte, path int, seq int) []byte {
+	dst := [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	payload := []byte{0x45, 0x00, 0x00, 0x10}
+	body := engine.EncodeHSR(payload, path, uint16(seq), 0x0800)
+	frame := make([]byte, 0, 12+len(body))
+	frame = append(append(append(frame, dst[:]...), srcMAC[:]...), body...)
+	return frame
+}
+
+// TestHSRHSRRingToInterlink: a path-0 frame on a ring port is forwarded to
+// the other ring port (path 1) AND onto the interlink (path 1), so the
+// second ring receives it.
+func TestHSRHSRRingToInterlink(t *testing.T) {
+	n, _, ringB, inter := hsrhsrNode()
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x50}
+	frame := hsrFrame(src, 0, 7)
+
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring1_a", frame: frame, frameSz: len(frame)})
+
+	if len(ringB.frames) != 1 {
+		t.Fatalf("expected 1 forward to ring B, got %d", len(ringB.frames))
+	}
+	if len(inter.frames) != 1 {
+		t.Fatalf("expected 1 forward to interlink, got %d", len(inter.frames))
+	}
+	// Both forwarded copies must carry path 1 and the same seq.
+	for name, f := range map[string][]byte{"ringB": ringB.frames[0], "inter": inter.frames[0]} {
+		path, seq, _, _, err := engine.DecodeHSR(f)
+		if err != nil {
+			t.Fatalf("%s decode: %v", name, err)
+		}
+		if path != 1 {
+			t.Errorf("%s path = %d, want 1", name, path)
+		}
+		if seq != 7 {
+			t.Errorf("%s seq = %d, want 7", name, seq)
+		}
+	}
+}
+
+// TestHSRHSRInterlinkToRing: an HSR frame from the interlink (ring 2) is
+// reinjected onto BOTH ring ports with path 0, and not echoed back.
+func TestHSRHSRInterlinkToRing(t *testing.T) {
+	n, ringA, ringB, _ := hsrhsrNode()
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x51}
+	frame := hsrFrame(src, 1, 9) // arrived on interlink with path 1
+
+	n.handleHSRInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+
+	if len(ringA.frames) != 1 || len(ringB.frames) != 1 {
+		t.Fatalf("expected 1 frame on each ring port, got A=%d B=%d", len(ringA.frames), len(ringB.frames))
+	}
+	for name, f := range map[string][]byte{"ringA": ringA.frames[0], "ringB": ringB.frames[0]} {
+		path, seq, _, _, err := engine.DecodeHSR(f)
+		if err != nil {
+			t.Fatalf("%s decode: %v", name, err)
+		}
+		if path != 0 {
+			t.Errorf("%s path = %d, want 0 (fresh traversal on ring 1)", name, path)
+		}
+		if seq != 9 {
+			t.Errorf("%s seq = %d, want 9 (preserved end-to-end)", name, seq)
+		}
+	}
+	// Duplicate of the same (src, seq) must not be reinjected again.
+	ringA.drain()
+	ringB.drain()
+	n.handleHSRInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+	if len(ringA.frames) != 0 || len(ringB.frames) != 0 {
+		t.Errorf("duplicate reinjected onto ring (A=%d B=%d)", len(ringA.frames), len(ringB.frames))
+	}
+}
+
+// TestHSRHSROwnFrameInterlink: a frame with our own source MAC arriving on
+// the interlink (a full-lap return from the other ring) is discarded.
+func TestHSRHSROwnFrameInterlink(t *testing.T) {
+	n, ringA, ringB, _ := hsrhsrNode()
+	n.dupTable.Cleanup()
+
+	frame := hsrFrame([6]byte{0x02, 0x50, 0x50, 0x00, 0x00, 0x01}, 1, 3)
+	n.handleHSRInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+	if len(ringA.frames) != 0 || len(ringB.frames) != 0 {
+		t.Errorf("own frame reinjected (A=%d B=%d)", len(ringA.frames), len(ringB.frames))
+	}
+}
+
+// TestHSRHSRSupervisionBridge: HSR supervision on a ring port is consumed
+// locally AND forwarded to the interlink; supervision from the interlink is
+// forwarded onto both ring ports.
+func TestHSRHSRSupervisionBridge(t *testing.T) {
+	n, ringA, ringB, inter := hsrhsrNode()
+	n.dupTable.Cleanup()
+
+	// Ring supervision -> interlink. The dispatch matches iface names
+	// lan_a/lan_b for ring ports (as the read loop uses them).
+	sup := supervision.BuildHSR([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x60}, 1, 0)
+	n.handleFrame(frameEvent{iface: "lan_a", frame: sup, frameSz: len(sup)})
+	if len(inter.frames) != 1 {
+		t.Errorf("ring supervision not forwarded to interlink (%d)", len(inter.frames))
+	}
+	if _, ok := n.supervisionSeen["02:00:00:00:00:60"]; !ok {
+		t.Error("ring supervision not consumed locally")
+	}
+
+	// Interlink supervision -> both ring ports.
+	inter.drain()
+	sup2 := supervision.BuildHSR([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x61}, 2, 0)
+	n.handleFrame(frameEvent{iface: "interlink", frame: sup2, frameSz: len(sup2)})
+	if len(ringA.frames) != 1 || len(ringB.frames) != 1 {
+		t.Errorf("interlink supervision not forwarded to ring (A=%d B=%d)", len(ringA.frames), len(ringB.frames))
 	}
 }

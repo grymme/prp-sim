@@ -27,7 +27,7 @@ docker build -t prp-sim:test -f ../Dockerfile ../
 
 SCRIPT_DIR="$(pwd)"
 cleanup() {
-    for d in "$SCRIPT_DIR/topologies/hsr-ring" "$SCRIPT_DIR/topologies/hsr-prp-coupling"; do
+    for d in "$SCRIPT_DIR/topologies/hsr-ring" "$SCRIPT_DIR/topologies/hsr-prp-coupling" "$SCRIPT_DIR/topologies/hsr-hsr-quadbox"; do
         (cd "$d" && docker compose down -v >/dev/null 2>&1 || true)
     done
     docker ps -aq --filter 'name=^(tg-|tests-)' | xargs -r docker rm -f >/dev/null 2>&1 || true
@@ -441,6 +441,94 @@ if { [ -z "$U8a" ] || [ "$U8a" -lt 55 ]; } || { [ -z "$U8b" ] || [ "$U8b" -lt 55
     exit 1
 fi
 echo "PASS: bidirectional coupling GOOSE exactly-once (A unique=$U8a dupes=$D8a; B unique=$U8b dupes=$D8b)"
+cd ../..
+
+# --- Test C: HSR-HSR QuadBox coupling (two rings) ---
+cd "$SCRIPT_DIR/topologies/hsr-hsr-quadbox"
+echo "==> starting HSR-HSR QuadBox topology"
+docker compose up --pull never -d
+
+for rb in hsr-redbox-d hsr-hsr-a hsr-hsr-b hsr-redbox-e; do
+    for i in $(seq 1 30); do
+        docker compose exec -T "$rb" pgrep prpd >/dev/null 2>&1 && break
+        [ "$i" = 30 ] && { echo "FAIL: prpd not running in $rb"; exit 1; }
+        sleep 1
+    done
+done
+echo "==> prpd running in all 4 RedBoxes"
+
+echo "==> test C1: SAN ping ring1 -> ring2 across the QuadBox"
+if ! docker compose exec -T san-r1 sh -c 'ping -c 5 -W 2 10.40.0.12' | grep -q "0% packet loss"; then
+    echo "FAIL: ring1->ring2 ping across QuadBox failed"
+    exit 1
+fi
+echo "PASS: QuadBox ping ring1->ring2"
+
+echo "==> test C2: SAN ping ring2 -> ring1 across the QuadBox"
+if ! docker compose exec -T san-r2 sh -c 'ping -c 5 -W 2 10.40.0.11' | grep -q "0% packet loss"; then
+    echo "FAIL: ring2->ring1 ping across QuadBox failed"
+    exit 1
+fi
+echo "PASS: QuadBox ping ring2->ring1"
+
+echo "==> test C3: GOOSE across both rings, exactly-once"
+docker run -d --name tg-recv-c3 --privileged \
+    --network hsr-hsr-quadbox_san-net-r2 \
+    --entrypoint trafficgen prp-sim:test --mode recv --iface eth0 --appid 0x1001 --duration 12s \
+    >/dev/null 2>&1 || true
+sleep 2
+docker run --rm --privileged \
+    --network hsr-hsr-quadbox_san-net-r1 \
+    --entrypoint trafficgen prp-sim:test --mode send --iface eth0 --appid 0x1001 \
+    --count 60 --rate 60 \
+    >/dev/null 2>&1 || true
+docker wait tg-recv-c3 >/dev/null 2>&1 || true
+TGC3=$(docker logs tg-recv-c3 2>&1)
+echo "$TGC3" | grep '^recv:' || true
+UC3=$(echo "$TGC3" | grep '^recv:' | sed -n 's/.*unique=\([0-9]*\).*/\1/p' || true)
+DC3=$(echo "$TGC3" | grep '^recv:' | sed -n 's/.*dupes=\([0-9]*\).*/\1/p' || true)
+docker rm -f tg-recv-c3 >/dev/null 2>&1 || true
+if [ -z "$DC3" ] || [ "$DC3" -gt 0 ]; then
+    echo "FAIL: QuadBox GOOSE duplicates (dupes=${DC3:-none})"
+    exit 1
+fi
+if [ -z "$UC3" ] || [ "$UC3" -lt 55 ]; then
+    echo "FAIL: QuadBox GOOSE loss (unique=${UC3:-none} of 60)"
+    exit 1
+fi
+echo "PASS: QuadBox GOOSE exactly-once (unique=$UC3, dupes=$DC3)"
+
+echo "==> test C4: ring 2 break, traffic ring1 -> ring2 continues"
+# Two ring links per ring (ring2-ab and ring2-ba); disconnect one.
+docker run -d --name tg-recv-c4 --privileged \
+    --network hsr-hsr-quadbox_san-net-r2 \
+    --entrypoint trafficgen prp-sim:test --mode recv --iface eth0 --appid 0x1001 --duration 15s \
+    >/dev/null 2>&1 || true
+sleep 2
+docker run --rm --privileged \
+    --network hsr-hsr-quadbox_san-net-r1 \
+    --entrypoint trafficgen prp-sim:test --mode send --iface eth0 --appid 0x1001 \
+    --count 200 --rate 30 \
+    >/dev/null 2>&1 &
+sleep 4
+RBE="$(docker compose ps -q hsr-redbox-e)"
+docker network disconnect hsr-hsr-quadbox_ring2-ab "$RBE" 2>/dev/null || true
+wait || true
+docker wait tg-recv-c4 >/dev/null 2>&1 || true
+TGC4=$(docker logs tg-recv-c4 2>&1)
+echo "$TGC4" | grep '^recv:' || true
+UC4=$(echo "$TGC4" | grep '^recv:' | sed -n 's/.*unique=\([0-9]*\).*/\1/p' || true)
+DC4=$(echo "$TGC4" | grep '^recv:' | sed -n 's/.*dupes=\([0-9]*\).*/\1/p' || true)
+docker rm -f tg-recv-c4 >/dev/null 2>&1 || true
+if [ -z "$DC4" ] || [ "$DC4" -gt 0 ]; then
+    echo "FAIL: QuadBox GOOSE with ring 2 break dupes (dupes=${DC4:-none})"
+    exit 1
+fi
+if [ -z "$UC4" ] || [ "$UC4" -lt 170 ]; then
+    echo "FAIL: QuadBox GOOSE with ring 2 break loss (unique=${UC4:-none} of 200)"
+    exit 1
+fi
+echo "PASS: QuadBox GOOSE with ring 2 break (unique=$UC4, dupes=$DC4)"
 cd ../..
 
 echo ""

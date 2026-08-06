@@ -153,6 +153,22 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 		n.tracef("HSR frame on %s has path %d — not forwarded", event.iface, path)
 	}
 
+	// hsr-hsr (QuadBox): also forward the frame onto the interlink so
+	// it reaches the other HSR ring. The interlink carries HSR-tagged
+	// traffic (path set to 1 like any other egress); the peer QuadBox
+	// injects it into its own ring as a fresh path-0 frame.
+	if n.IsHSRHSR() && n.Interlink != nil {
+		fwd, err := engine.RewriteHSRPath(event.frame, 1)
+		if err == nil {
+			if _, err := n.Interlink.Write(fwd); err != nil {
+				n.tracef("HSR forward to interlink failed: %v", err)
+			} else {
+				n.countFrame("interlink", "out")
+				n.tracef("HSR frame from %s (seq %d) forwarded to interlink (ring 2)", event.iface, seq)
+			}
+		}
+	}
+
 	// Deliver to the interlink. In hsr-prp coupling the interlink is a
 	// PRP LAN and the PathId rule applies; in hsr-san it is a plain SAN.
 	if n.IsHSRPRPCoupling() {
@@ -177,6 +193,12 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 		// Same NetId, other LanId (IEC §5.2.2.3.1): drop.
 		n.tracef("HSR frame PathId net %d lan %d (ours net %d lan %d) — reinjection prevented", path>>1, path&1, n.NetID(), n.LanID())
 		n.noteDrop("path")
+		return
+	}
+
+	// hsr-hsr (QuadBox): the frame has already been forwarded to the
+	// interlink above — there is no SAN on this port. Return.
+	if n.IsHSRHSR() {
 		return
 	}
 
@@ -206,6 +228,51 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 	n.countFrame("interlink", "in")
 	srcMAC := engine.GetSrcMAC(event.frame)
+
+	// hsr-hsr (QuadBox): the interlink carries HSR-tagged frames from
+	// the other ring. Decode, dedup and inject into our ring as a fresh
+	// path-0 frame on both ring ports (the peer's ring number is a new
+	// path domain).
+	if n.IsHSRHSR() {
+		_, seq, _, _, err := engine.DecodeHSR(event.frame)
+		if err != nil {
+			n.tracef("HSR interlink frame: %v", err)
+			n.noteDrop("malformed")
+			return
+		}
+		// Own frame returning over the interlink — discard.
+		if n.mac != nil && bytesEqual(n.mac, srcMACBytes(event.frame)) {
+			n.tracef("HSR interlink frame from own MAC (seq %d) — discarding", seq)
+			n.noteDrop("own")
+			return
+		}
+		if n.dupTable.Find(srcMAC, seq) {
+			n.tracef("HSR interlink duplicate from %s seq=%d — discarding", srcMAC, seq)
+			n.noteDrop("dup")
+			return
+		}
+		n.dupTable.InsertWithExpiry(srcMAC, seq, 0, n.entryForgetMs())
+
+		// Reinject into this ring with path 0 (fresh traversal).
+		fwd, err := engine.RewriteHSRPath(event.frame, 0)
+		if err != nil {
+			n.tracef("HSR interlink rewrite failed: %v", err)
+			n.noteDrop("malformed")
+			return
+		}
+		if _, err := n.LanA.Write(fwd); err != nil {
+			n.tracef("ring A write failed: %v", err)
+		} else {
+			n.countFrame("lan_a", "out")
+		}
+		if _, err := n.LanB.Write(fwd); err != nil {
+			n.tracef("ring B write failed: %v", err)
+		} else {
+			n.countFrame("lan_b", "out")
+		}
+		n.tracef("HSR frame from ring 2 (seq %d) injected into ring 1 (path 0)", seq)
+		return
+	}
 
 	// Learn the SAN source so we can later decide which ring frames to
 	// forward back (proxy table, used with forward_all=false).

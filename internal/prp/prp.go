@@ -389,12 +389,34 @@ func (n *Node) handleFrame(event frameEvent) {
 	// Get EtherType to classify the frame
 	etherType := engine.GetEtherType(frame)
 
-	// Handle supervision frames (0x88fb). Only frames received on the PRP
-	// LANs are supervision traffic; a 0x88fb frame arriving on the
-	// interlink is ordinary data and must be forwarded like
-	// any other frame.
-	if etherType == 0x88fb && (event.iface == "lan_a" || event.iface == "lan_b") {
+	// Handle supervision frames (0x88fb). A 0x88fb frame arriving on the
+	// PRP LANs or (hsr-hsr) on the interlink is supervision traffic and
+	// is consumed locally. A 0x88fb frame arriving on the interlink of a
+	// prp-san/hsr-san node is ordinary data (e.g. SAN traffic) and must
+	// be forwarded like any other frame.
+	supervision := etherType == 0x88fb && (event.iface == "lan_a" || event.iface == "lan_b" ||
+		(n.IsHSRHSR() && event.iface == "interlink"))
+	if supervision {
 		n.handleSupervisionFrame(event)
+		// hsr-hsr (QuadBox): forward ring supervision onto the other
+		// ring via the interlink (and vice versa) so both rings learn
+		// each other's nodes.
+		if n.IsHSRHSR() {
+			if event.iface == "lan_a" || event.iface == "lan_b" {
+				if n.Interlink != nil {
+					if _, err := n.Interlink.Write(event.frame); err == nil {
+						n.countFrame("interlink", "out")
+					}
+				}
+			} else {
+				if _, err := n.LanA.Write(event.frame); err == nil {
+					n.countFrame("lan_a", "out")
+				}
+				if _, err := n.LanB.Write(event.frame); err == nil {
+					n.countFrame("lan_b", "out")
+				}
+			}
+		}
 		return
 	}
 
@@ -713,6 +735,8 @@ func (n *Node) handleSupervisionFrame(event frameEvent) {
 //     RCT on the coupled PRP LAN (the two sides speak different
 //     supervision dialects; IEC 62439-3 §5.2.2.3.2 requires the RedBox to
 //     present each side with its own format).
+//   - hsr-hsr: HSR supervision on the ring ports AND on the interlink so
+//     both rings learn this node.
 func (n *Node) SendSupervisionFrame() {
 	srcMAC := n.mac
 	if srcMAC == nil {
@@ -752,6 +776,14 @@ func (n *Node) SendSupervisionFrame() {
 	n.counters.supSent++
 	n.counters.mu.Unlock()
 	n.tracef("HSR supervision frame (seq %d, path %d) sent on ring", n.supSeq, path)
+
+	// hsr-hsr (QuadBox): also announce on the interlink so the other
+	// ring learns this node.
+	if n.IsHSRHSR() && n.Interlink != nil {
+		if _, err := n.Interlink.Write(sup); err != nil {
+			log.Printf("prp: failed to write supervision to interlink: %v", err)
+		}
+	}
 
 	// hsr-prp: also announce on the coupled PRP LAN in PRP dialect.
 	if n.IsHSRPRPCoupling() && n.Interlink != nil {

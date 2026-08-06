@@ -1,0 +1,26 @@
+# HSR-HSR QuadBox A: ring ports eth0/eth1 on ring 1, interlink eth2 to
+# QuadBox B (which carries ring 2). Bridging between two HSR rings.
+node:
+  name: "hsr-hsr-a"
+  role: hsr-hsr
+
+interfaces:
+  lan_a: eth0
+  lan_b: eth1
+  interlink: eth2
+
+prp:
+  prp_id: 0
+  trailer_enabled: true
+
+supervision:
+  enabled: true
+  life_check_interval: 2s
+
+duplicate_detection:
+  entry_forget_time: 640ms
+  max_node_table_size: 256
+
+interlink:
+  forward_all: true
+  vlan_filter: []

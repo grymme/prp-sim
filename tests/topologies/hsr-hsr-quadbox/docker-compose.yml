@@ -1,0 +1,95 @@
+# HSR-HSR QuadBox integration topology: two rings coupled via two QuadBoxes.
+#
+#   Ring 1:  hsr-redbox-d (hsr-san) <-- ring links --> hsr-hsr-a
+#              san-r1 (10.40.0.11)                      |
+#                                                      interlink
+#   Ring 2:  hsr-redbox-e (hsr-san) <-- ring links --> hsr-hsr-b
+#              san-r2 (10.40.0.12)                      |
+#                                                     interlink
+#
+# hsr-hsr-a and hsr-hsr-b form the QuadBox pair: each has two ring ports
+# on its own ring and one interlink port connecting the two QuadBoxes.
+# Frames injected on ring 1 cross to ring 2 via the interlink (HSR-tagged,
+# same sequence number) and vice versa, giving SAN-to-SAN connectivity
+# across both rings with seamless failover per ring.
+#
+# Interface naming inside each RedBox:
+#   eth0 = ring port A, eth1 = ring port B, eth2 = interlink
+
+x-redbox: &redbox
+  image: prp-sim:test
+  privileged: true
+
+services:
+  hsr-redbox-d:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-d.yaml:/etc/prp/config.yaml
+    networks:
+      ring1-ab:
+        interface_name: eth0
+      ring1-ba:
+        interface_name: eth1
+      san-net-r1:
+        interface_name: eth2
+
+  hsr-hsr-a:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-hsr-a.yaml:/etc/prp/config.yaml
+    networks:
+      ring1-ab:
+        interface_name: eth0
+      ring1-ba:
+        interface_name: eth1
+      quadlink:
+        interface_name: eth2
+
+  hsr-hsr-b:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-hsr-b.yaml:/etc/prp/config.yaml
+    networks:
+      ring2-ab:
+        interface_name: eth0
+      ring2-ba:
+        interface_name: eth1
+      quadlink:
+        interface_name: eth2
+
+  hsr-redbox-e:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-e.yaml:/etc/prp/config.yaml
+    networks:
+      ring2-ab:
+        interface_name: eth0
+      ring2-ba:
+        interface_name: eth1
+      san-net-r2:
+        interface_name: eth2
+
+  san-r1:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.40.0.11/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-r1:
+        interface_name: eth0
+
+  san-r2:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.40.0.12/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-r2:
+        interface_name: eth0
+
+networks:
+  ring1-ab:
+  ring1-ba:
+  ring2-ab:
+  ring2-ba:
+  quadlink:
+  san-net-r1:
+  san-net-r2:
