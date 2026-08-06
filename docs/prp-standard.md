@@ -194,16 +194,10 @@ multicast_filter:
 
 ## HSR-PRP Coupling
 
-HSR (ring topology) is **not supported** by this simulator — it implements
-PRP only (see below). The config keys that used to imply HSR support
-(`interlink.mode`, `prp.lan_id`) have been removed. For HSR use a
-dedicated HSR implementation (e.g. the Linux kernel `hsr` module or a
-vendor device).
-
-> This container implements PRP only. HSR uses a different topology (a
-> ring, not two parallel LANs) and a different frame-tagging mechanism.
-> Coupling an HSR ring with a PRP network requires a special QuadBox
-> device and is out of scope for this implementation.
+HSR (ring topology) is fully supported by this simulator. The RedBox
+speaks real HSR (0x892F tags, HSR supervision) and can couple an HSR
+ring to a PRP network in the `hsr-prp` mode (see "HSR / HSR-PRP support"
+below).
 
 ## Network Topologies
 
@@ -318,9 +312,12 @@ form the HSR↔PRP Dual RedBox topology. Configured via `hsr.prp_id`
 
 ### HSR-HSR (role `hsr-hsr`, QuadBox)
 
-The role is config-validated and registered; full implementation is a
-follow-up. Ring ports speak HSR; the interlink will carry HSR-tagged
-traffic for a second ring.
+Connects two HSR rings. Two `hsr-hsr` RedBoxes are joined by their
+interlink ports: each has eth0/eth1 on its own ring and eth2 on the
+interlink to the other QuadBox. Frames cross from one ring to the other
+over the interlink with the HSR tag and sequence number preserved, so
+both rings form a single redundancy domain. Ring supervision is bridged
+across the interlink so both rings learn each other's nodes.
 
 ## References
 

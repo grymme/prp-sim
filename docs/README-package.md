@@ -85,6 +85,11 @@ node via `PRP_ROLE` (or `node.role` in the config):
   Frames cross the ring↔PRP boundary with the sequence number preserved,
   and the PathId reinjection check (IEC 62439-3 COR1 5.2.2.3.1) keeps
   LAN-A traffic off LAN B.
+- **`hsr-hsr`** — connect two HSR rings (QuadBox). Place two `hsr-hsr`
+  nodes joined by their interlink ports; each carries its own ring on
+  eth0/eth1 and the interlink on eth2. Frames cross between the rings
+  with the HSR tag and sequence preserved, forming one redundancy
+  domain.
 
 Example ring topology:
 

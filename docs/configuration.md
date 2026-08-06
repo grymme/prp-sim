@@ -78,7 +78,7 @@ interlink:
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Human-readable node name. Appears in supervision frames and logs. |
-| `role` | string | Yes | `prp-san` | Operating mode. `prp-san` bridges a SAN to two PRP LANs (legacy name `redbox`); `hsr-san` bridges a SAN into an HSR ring; `hsr-prp` couples an HSR ring to one PRP LAN; `hsr-hsr` (QuadBox, follow-up) couples two HSR rings. |
+| `role` | string | Yes | `prp-san` | Operating mode. `prp-san` bridges a SAN to two PRP LANs (legacy name `redbox`); `hsr-san` bridges a SAN into an HSR ring; `hsr-prp` couples an HSR ring to one PRP LAN; `hsr-hsr` (QuadBox) couples two HSR rings. |
 
 ### interfaces
 

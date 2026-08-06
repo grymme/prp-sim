@@ -149,7 +149,7 @@ The same appliance also runs HSR. Per node, set `PRP_ROLE` (and, for
 | `prp-san` (default) | SAN → two PRP LANs | eth0/eth1 = LAN A/B, eth2 = SAN |
 | `hsr-san` | SAN → HSR ring | eth0/eth1 = ring A/B, eth2 = SAN |
 | `hsr-prp` | HSR ring → one PRP LAN | eth0/eth1 = ring A/B, eth2 = PRP LAN |
-| `hsr-hsr` | two HSR rings (QuadBox, follow-up) | eth0/eth1 = ring 1, eth2 = ring 2 |
+| `hsr-hsr` | two HSR rings (QuadBox) | eth0/eth1 = ring 1, eth2 = interlink to the other QuadBox |
 
 For the HSR-PRP **dual RedBox** coupling, put two `hsr-prp` nodes on the
 same ring — one with `HSR_LAN_ID=A` attached to PRP LAN A, one with
