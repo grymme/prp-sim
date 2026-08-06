@@ -18,6 +18,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"prp-gns3/internal/version"
 )
 
 // PrpdStats is the snapshot data the daemon passes to the renderer.
@@ -81,8 +83,8 @@ func (t *prpdTUI) Draw(st PrpdStats, set PrpdSettings, logs []string) {
 	if st.Role == "hsr-prp" {
 		role = fmt.Sprintf("%s (NetId %d, LanId %s)", st.Role, st.NetID, st.LanID)
 	}
-	line(fmt.Sprintf("PRP-SIM REDBOX   name=%s   role=%s   prp_id=%d   uptime=%s",
-		st.Name, role, st.PRPID, uptime))
+	line(fmt.Sprintf("PRP-SIM REDBOX   %s   name=%s   role=%s   prp_id=%d   uptime=%s",
+		version.Version, st.Name, role, st.PRPID, uptime))
 	bar()
 
 	line("STATS")

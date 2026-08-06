@@ -4,6 +4,9 @@
 FROM golang:1.23-alpine AS builder
 WORKDIR /build
 
+# Release version (e.g. v0.5.3), injected into the binaries' version var.
+ARG VERSION=dev
+
 # Cache dependencies (changes infrequently)
 COPY go.mod go.sum ./
 RUN go mod download
@@ -11,11 +14,11 @@ RUN go mod download
 # Build the binary
 COPY . .
 RUN CGO_ENABLED=0 go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X prp-gns3/internal/version.Version=${VERSION}" \
     -trimpath \
     -o /prpd ./cmd/prpd \
  && CGO_ENABLED=0 go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X prp-gns3/internal/version.Version=${VERSION}" \
     -trimpath \
     -o /usr/local/bin/trafficgen ./cmd/trafficgen
 

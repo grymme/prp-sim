@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"prp-gns3/internal/version"
 )
 
 // render draws the full split-screen view into w.
 func render(w io.Writer, role string, ifaceName string, appid uint16, stNum uint16, allData bool, total, unique, dupes int, latencyMs int64, errors []string) {
 	fmt.Fprintf(w, "\033[2J\033[H")
-	fmt.Fprintf(w, "=== PRP IED TUI === role=%s iface=%s appid=0x%04x\n", role, ifaceName, appid)
+	fmt.Fprintf(w, "=== PRP IED TUI %s === role=%s iface=%s appid=0x%04x\n", version.Version, role, ifaceName, appid)
 	fmt.Fprintf(w, "=== PRP-level === LAN-A/B frames | RCT errors | VLAN tags | supervision\n")
 	fmt.Fprintf(w, "=== GOOSE/SV-level === stNum=%d allData=%v total=%d unique=%d dupes=%d lat=%dms\n",
 		stNum, allData, total, unique, dupes, latencyMs)
