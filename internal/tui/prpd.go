@@ -76,39 +76,29 @@ func (t *prpdTUI) Draw(st PrpdStats, set PrpdSettings, logs []string) {
 	var b strings.Builder
 	b.WriteString("\x1b[2J\x1b[H") // clear screen + home (short frames must not leave stale lines)
 	line := func(s string) { b.WriteString(s); b.WriteString("\r\n") }
-	bar := func() { line("------------------------------------------------------------------------") }
 
 	uptime := time.Since(t.started).Round(time.Second)
 	role := st.Role
 	if st.Role == "hsr-prp" {
-		role = fmt.Sprintf("%s (NetId %d, LanId %s)", st.Role, st.NetID, st.LanID)
+		role = fmt.Sprintf("%s N%d L%s", st.Role, st.NetID, st.LanID)
 	}
-	line(fmt.Sprintf("PRP-SIM REDBOX   %s   name=%s   role=%s   prp_id=%d   uptime=%s",
+	// Row 1 — header: version, name, role, PRP ID, uptime.
+	line(fmt.Sprintf("%s %s %s prp=%d up=%s",
 		version.Version, st.Name, role, st.PRPID, uptime))
-	bar()
-
-	line("STATS")
-	line(fmt.Sprintf("  port A (lan_a/ring A):  in %10d   out %10d", st.LanAIn, st.LanAOut))
-	line(fmt.Sprintf("  port B (lan_b/ring B):  in %10d   out %10d", st.LanBIn, st.LanBOut))
-	line(fmt.Sprintf("  interlink (SAN/PRP):    in %10d   out %10d", st.InterIn, st.InterOut))
-	line(fmt.Sprintf("  supervision sent=%d   node table=%d entries", st.SupSent, st.DupTableSize))
-	bar()
-
-	line("SETTINGS")
-	line(fmt.Sprintf("  interfaces: %s", set.Interfaces))
-	line(fmt.Sprintf("  trailer_enabled=%v   forward_all=%v", set.TrailerEnabled, set.ForwardAll))
-	line(fmt.Sprintf("  supervision=%s   node_forget=%s   proxy_forget=%s   entry_forget=%s",
-		set.Supervision, set.NodeForget, set.ProxyForget, set.EntryForget))
-	line(fmt.Sprintf("  vlan_filter=%s   multicast=%s   debug_frames=%v",
+	// Row 2 — stats, one line per port pair.
+	line(fmt.Sprintf("A in=%d out=%d | B in=%d out=%d | I in=%d out=%d | sup=%d nt=%d",
+		st.LanAIn, st.LanAOut, st.LanBIn, st.LanBOut,
+		st.InterIn, st.InterOut, st.SupSent, st.DupTableSize))
+	// Row 3 — settings, one line.
+	line(fmt.Sprintf("%s trailer=%v fwd=%v sup=%s nf=%s pf=%s ef=%s vlan=%s mcast=%s dbg=%v",
+		set.Interfaces, set.TrailerEnabled, set.ForwardAll, set.Supervision,
+		set.NodeForget, set.ProxyForget, set.EntryForget,
 		set.VLANFilter, set.Multicast, set.DebugFrames))
-	bar()
-
-	line("DEBUG / DROPS")
-	drops := formatDrops(st.Drops)
-	line(fmt.Sprintf("  drops: %s", drops))
-	line("  log (last lines):")
+	// Row 4 — drops.
+	line(fmt.Sprintf("drops: %s", formatDrops(st.Drops)))
+	// Rows 5+ — last log lines.
 	for _, l := range logs {
-		line("    " + truncate(l, 72))
+		line("  " + truncate(l, 76))
 	}
 	// Clear anything below the last drawn line (frames shrink when the
 	// log list does), so stale text from the previous frame never shows.

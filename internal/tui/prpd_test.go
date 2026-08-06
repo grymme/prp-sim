@@ -81,10 +81,18 @@ func TestPrpdTUIHandlesLogBurst(t *testing.T) {
 	}, b.Lines(8))
 	view.StopPrpd()
 	s := out.String()
-	for _, want := range []string{"PRP-SIM REDBOX", "STATS", "SETTINGS", "DEBUG / DROPS", "drops: dup=3", "burst line 4"} {
+	// Compact layout: version on the first line, stats/settings on single
+	// rows, drops, then the log tail.
+	for _, want := range []string{"v0.5.3", "A in=", "trailer=", "drops: dup=3", "burst line 4"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("frame missing %q", want)
 		}
+	}
+	// The version must appear on the FIRST line of the drawn frame so it
+	// is never scrolled off the top (the alternate-screen prefix precedes
+	// the first draw).
+	if !strings.Contains(s, "\x1b[2J\x1b[Hv0.5.3") {
+		t.Errorf("version not on first line: %q", s[:80])
 	}
 }
 
