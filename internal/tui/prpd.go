@@ -18,8 +18,6 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // PrpdStats is the snapshot data the daemon passes to the renderer.
@@ -53,13 +51,6 @@ type PrpdSettings struct {
 	VLANFilter     string // "none" or "10,20"
 	Multicast      string // "none (allow all)" or "01-00-5E"
 	DebugFrames    bool
-}
-
-// IsTerminal reports whether fd refers to a terminal (used to decide
-// between the full-screen TUI and plain line output).
-func IsTerminal(fd uintptr) bool {
-	_, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	return err == nil
 }
 
 // prpdTUI manages the full-screen session.
