@@ -18,7 +18,7 @@ STAGE="$(mktemp -d)/${PKG}"
 mkdir -p "${STAGE}"
 
 echo "==> building image prp-sim:${VERSION}"
-docker build -t "prp-sim:${VERSION}" -f Dockerfile . >/dev/null
+docker build --build-arg VERSION="${VERSION}" -t "prp-sim:${VERSION}" -f Dockerfile . >/dev/null
 
 echo "==> exporting image tarball (self-contained, no GHCR pull needed)"
 docker save "prp-sim:${VERSION}" | gzip > "${STAGE}/prp-sim-image.tar.gz"
@@ -26,6 +26,7 @@ docker save "prp-sim:${VERSION}" | gzip > "${STAGE}/prp-sim-image.tar.gz"
 echo "==> copying GNS3 appliances + symbols"
 mkdir -p "${STAGE}/gns3/symbols"
 cp gns3/westermo-prp.gns3a \
+   gns3/westermo-prp-edge.gns3a \
    gns3/iec61850-publisher.gns3a \
    gns3/iec61850-subscriber.gns3a "${STAGE}/gns3/"
 cp gns3/symbols/prp-node.svg \
@@ -33,7 +34,8 @@ cp gns3/symbols/prp-node.svg \
    gns3/symbols/iec61850-subscriber.svg "${STAGE}/gns3/symbols/"
 
 echo "==> cross-compiling Windows traffic generator (GOOS=windows amd64)"
-GOOS=windows GOARCH=amd64 go build -o "${STAGE}/trafficgen-windows-amd64.exe" ./cmd/trafficgen
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X prp-gns3/internal/version.Version=${VERSION}" \
+    -o "${STAGE}/trafficgen-windows-amd64.exe" ./cmd/trafficgen
 
 echo "==> downloading Npcap installer (best effort; run as admin on Windows)"
 NPDIR="${STAGE}/windows"
