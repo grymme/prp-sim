@@ -44,7 +44,8 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=2s --retries=3 \
 LABEL org.opencontainers.image.title="PRP GNS3 Simulation Container" \
       org.opencontainers.image.description="PRP (IEC 62439-3) RedBox simulation node for GNS3" \
       org.opencontainers.image.source="https://github.com/grymme/prp-sim" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="Arctic3D AB"
 
 RUN chmod +x /entrypoint.sh
 
