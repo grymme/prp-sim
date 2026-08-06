@@ -45,10 +45,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push to GHCR (main → latest + edge)
+      - name: Push to GHCR (main → edge only; latest is reserved for tag
+        # releases so ghcr.io/...:latest is only ever updated by a tag
+        # push).
         if: github.ref == 'refs/heads/main'
         run: |
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge
 
