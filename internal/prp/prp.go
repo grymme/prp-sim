@@ -307,7 +307,9 @@ func (n *Node) Stop() {
 // periodicCleanup removes expired entries from the node table and drops
 // peers that have not sent a supervision frame within node_forget_time.
 func (n *Node) periodicCleanup() {
-	if n.dupTable.Cleanup() > 0 {
+	if n.dupTable.Cleanup() > 0 && n.Config.Debug {
+		// Only log when debugging; during normal traffic entries expire
+		// every second and this would flood the log panel.
 		log.Printf("prp: node table cleaned up, size now %d", n.dupTable.Size())
 	}
 	n.cleanupSupervisionSeen()

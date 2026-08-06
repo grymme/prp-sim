@@ -12,6 +12,7 @@ import (
 	"prp-gns3/internal/config"
 	"prp-gns3/internal/iface"
 	"prp-gns3/internal/prp"
+	"prp-gns3/internal/tui"
 )
 
 func main() {
@@ -66,6 +67,13 @@ func main() {
 	// the node.
 	applyStaticIPs(cfg)
 
+	// Route prpd's log output through a bounded ring buffer. When the
+	// console is a terminal the TUI renders the buffer's last lines in
+	// its debug panel; the buffer also tees everything to stderr so
+	// `docker logs` keeps the full output.
+	ring := tui.NewRingBuffer(200, func(p []byte) { os.Stderr.Write(p) })
+	log.SetOutput(ring)
+
 	// Create and start the PRP node
 	node := prp.NewNode(prpCfg)
 	if err := node.Start(); err != nil {
@@ -100,35 +108,122 @@ func main() {
 		}()
 	}
 
-	// Periodic live status line on the console (a full-screen TUI would
-	// fight with prpd's own log output over the GNS3 telnet console).
-	// Show per-port counters, drop reasons and the HSR coupling identity.
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				st := node.Snapshot()
-				role := st.Role
-				if role == "hsr-prp" {
-					role = fmt.Sprintf("hsr-prp (NetId %d, LanId %s)", st.NetID, st.LanID)
+	// Console presentation: a full-screen ANSI TUI when stdout is a real
+	// terminal (GNS3 telnet console) and PRP_NO_TUI is not set; otherwise
+	// the plain one-line status (CI, pipes, `docker logs`).
+	if tui.IsTerminal(1) && os.Getenv("PRP_NO_TUI") == "" {
+		go runTUILoop(node, ring, cfg)
+	} else {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					st := node.Snapshot()
+					role := st.Role
+					if role == "hsr-prp" {
+						role = fmt.Sprintf("hsr-prp (NetId %d, LanId %s)", st.NetID, st.LanID)
+					}
+					fmt.Printf("status: role=%s ringA in=%d out=%d ringB in=%d out=%d inter in=%d out=%d sup=%d ntable=%d drops=%v\n",
+						role,
+						st.LanAIn, st.LanAOut, st.LanBIn, st.LanBOut,
+						st.InterIn, st.InterOut, st.SupSent, st.DupTableSize,
+						formatDrops(st.Drops))
+				case <-node.StopChan():
+					return
 				}
-				fmt.Printf("status: role=%s ringA in=%d out=%d ringB in=%d out=%d inter in=%d out=%d sup=%d ntable=%d drops=%v\n",
-					role,
-					st.LanAIn, st.LanAOut, st.LanBIn, st.LanBOut,
-					st.InterIn, st.InterOut, st.SupSent, st.DupTableSize,
-					formatDrops(st.Drops))
-			case <-node.StopChan():
-				return
 			}
-		}
-	}()
+		}()
+	}
 
 	// Wait for signal
 	<-sig
 	fmt.Println("prpd: shutting down")
 	node.Stop()
+}
+
+// runTUILoop renders the full-screen TUI on a 10 s ticker.
+func runTUILoop(node *prp.Node, ring *tui.RingBuffer, cfg *config.Config) {
+	view := tui.StartPrpd(os.Stdout)
+	defer view.StopPrpd()
+
+	interfaces := fmt.Sprintf("%s (A), %s (B), %s (interlink)",
+		cfg.Interfaces.LanA, cfg.Interfaces.LanB, cfg.Interfaces.Interlink)
+	vlan := "none"
+	if len(cfg.Interlink.VLANFilter) > 0 {
+		parts := make([]string, 0, len(cfg.Interlink.VLANFilter))
+		for _, v := range cfg.Interlink.VLANFilter {
+			parts = append(parts, fmt.Sprintf("%d", v))
+		}
+		vlan = strings.Join(parts, ",")
+	}
+	mc := "none (allow all)"
+	if cfg.MulticastFilter.FirstOctet != "" {
+		mc = cfg.MulticastFilter.FirstOctet
+	}
+	sup := "off"
+	if cfg.Supervision.Enabled {
+		sup = "on (" + cfg.Supervision.LifeCheckInterval + ")"
+		if sup == "on ()" {
+			sup = "on (2s)"
+		}
+	}
+	entryForget := cfg.DuplicateDetection.EntryForgetTime
+	if entryForget == "" {
+		entryForget = "640ms"
+	}
+	nodeForget := cfg.Supervision.NodeForgetTime
+	if nodeForget == "" {
+		nodeForget = "64s"
+	}
+	proxyForget := cfg.Supervision.ProxyNodeForgetTime
+	if proxyForget == "" {
+		proxyForget = "64s"
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	// Draw once immediately, then every 10 s.
+	draw := func() {
+		st := node.Snapshot()
+		view.Draw(tui.PrpdStats{
+			Role:         st.Role,
+			Name:         cfg.Node.Name,
+			PRPID:        node.Config.PRPID,
+			NetID:        st.NetID,
+			LanID:        st.LanID,
+			LanAIn:       st.LanAIn,
+			LanAOut:      st.LanAOut,
+			LanBIn:       st.LanBIn,
+			LanBOut:      st.LanBOut,
+			InterIn:      st.InterIn,
+			InterOut:     st.InterOut,
+			SupSent:      st.SupSent,
+			DupTableSize: st.DupTableSize,
+			Drops:        st.Drops,
+		}, tui.PrpdSettings{
+			Interfaces:     interfaces,
+			TrailerEnabled: cfg.PRP.TrailerEnabled,
+			Supervision:    sup,
+			NodeForget:     nodeForget,
+			ProxyForget:    proxyForget,
+			EntryForget:    entryForget,
+			ForwardAll:     cfg.Interlink.ForwardAll,
+			VLANFilter:     vlan,
+			Multicast:      mc,
+			DebugFrames:    os.Getenv("DEBUG_FRAMES") == "1",
+		}, ring.Lines(8))
+	}
+	draw()
+	for {
+		select {
+		case <-ticker.C:
+			draw()
+		case <-node.StopChan():
+			return
+		}
+	}
 }
 
 // formatDrops renders the drop-reason counters as "dup=1 own=2 ...".

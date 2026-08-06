@@ -97,7 +97,7 @@ func TestHSRSanDelivery(t *testing.T) {
 	payload := []byte{0x45, 0x00, 0x00, 0x10}
 	hsrBody := engine.EncodeHSR(payload, 0, 7, 0x0800)
 	hsr := make([]byte, 0, 12+len(hsrBody))
-	hsr = append(append(append(append([]byte(nil), dst[:]...), src[:]...), hsrBody...))
+	hsr = append(append(append(hsr, dst[:]...), src[:]...), hsrBody...)
 
 	n.handleIncomingHSRFrame(frameEvent{iface: "ring_b", frame: hsr, frameSz: len(hsr)})
 	if len(inter.frames) != 1 {
