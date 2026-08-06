@@ -1,15 +1,16 @@
-# HSR ring integration topology (3 RedBoxes, hsr-san):
+# HSR ring integration topology (4 RedBoxes, hsr-san) — mirrors the user's
+# GNS3 setup (prp1..prp4):
 #
-#   san-1 -- redbox-a -- ring31 / ring12 -- redbox-b -- san-2
+#   san-1 -- redbox-a (prp1) -- ring12 -- redbox-b (prp2) -- san-2
 #              |                                  |
-#              +--- ring12                       +--- ring23
-#                      |                          |
-#                   redbox-c -- san-3
+#            ring41                            ring23
+#              |                                  |
+#   san-4 -- redbox-d (prp4) -- ring34 -- redbox-c (prp3) -- san-3
 #
-# Each RedBox bridges its OWN SAN segment onto the HSR ring via HSR-tagged
-# frames on its two ring ports. The three per-link Docker networks form a
-# physical ring; break any one link and traffic still flows the other way
-# around the ring (seamless failover, zero recovery time).
+# Four RedBoxes each bridge their own SAN segment onto the HSR ring via
+# HSR-tagged frames on their two ring ports. A 4-node ring forces
+# multi-hop traversal: with a link broken, a frame may need 2+ hops, so
+# every node must forward frames regardless of the path bits.
 #
 # Interface naming inside each RedBox:
 #   eth0 = ring port A, eth1 = ring port B, eth2 = SAN (interlink)
@@ -24,7 +25,7 @@ services:
     volumes:
       - ../../configs/hsr-redbox-a.yaml:/etc/prp/config.yaml
     networks:
-      ring31:
+      ring41:
         interface_name: eth0
       ring12:
         interface_name: eth1
@@ -50,9 +51,21 @@ services:
     networks:
       ring23:
         interface_name: eth0
-      ring31:
+      ring34:
         interface_name: eth1
       san-net-3:
+        interface_name: eth2
+
+  redbox-d:
+    <<: *redbox
+    volumes:
+      - ../../configs/hsr-redbox-d.yaml:/etc/prp/config.yaml
+    networks:
+      ring34:
+        interface_name: eth0
+      ring41:
+        interface_name: eth1
+      san-net-4:
         interface_name: eth2
 
   san-1:
@@ -79,10 +92,20 @@ services:
       san-net-3:
         interface_name: eth0
 
+  san-4:
+    image: alpine:3.19
+    command: ["sh", "-c", "ip addr add 10.0.0.14/24 dev eth0 2>/dev/null; sleep 3600"]
+    privileged: true
+    networks:
+      san-net-4:
+        interface_name: eth0
+
 networks:
   ring12:
   ring23:
-  ring31:
+  ring34:
+  ring41:
   san-net-1:
   san-net-2:
   san-net-3:
+  san-net-4:

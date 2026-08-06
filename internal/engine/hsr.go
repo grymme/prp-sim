@@ -108,6 +108,32 @@ func RewriteHSRPath(frame []byte, path int) ([]byte, error) {
 	return out, nil
 }
 
+// RewriteHSRPathLane sets only the lane bit (bit 0 of the path nibble)
+// of the PathId to the given egress lane (0 = LAN A, 1 = LAN B),
+// preserving any coupling NetId bits (path bits 3-1) and the LSDU size
+// field (low 12 bits). This mirrors the kernel's hsr_set_path_id: the
+// path field identifies the lane the frame travels on, and every ring
+// node forwards to the other port with the lane bit set for the egress
+// port.
+func RewriteHSRPathLane(frame []byte, laneA bool) ([]byte, error) {
+	off, err := hsrTagOffset(frame)
+	if err != nil {
+		return nil, err
+	}
+	if len(frame) < off+HSRTagLen {
+		return nil, fmt.Errorf("frame too short for HSR tag: %d bytes", len(frame))
+	}
+	out := append([]byte(nil), frame...)
+	word := binary.BigEndian.Uint16(out[off : off+2])
+	var lane uint16
+	if !laneA {
+		lane = 1
+	}
+	word = (word & 0xEFFF) | (lane << 12) // keep NetId bits (path 3-1) + LSDU, set lane bit 0
+	binary.BigEndian.PutUint16(out[off:off+2], word)
+	return out, nil
+}
+
 // StripHSR returns the original (untagged) Ethernet frame carried inside
 // an HSR frame: MAC header + [VLAN tag] + encap_proto + payload.
 func StripHSR(frame []byte) ([]byte, error) {

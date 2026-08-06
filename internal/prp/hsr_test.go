@@ -29,7 +29,10 @@ func hsrNode(role string) (*Node, *memPort, *memPort, *memPort) {
 }
 
 // TestHSRPathTransition: a path-0 frame on one ring port is forwarded to
-// the other with path 1; a path-1 frame is not re-forwarded.
+// the other with the egress-lane path (B = 1). A duplicate (same src,
+// seq) is not forwarded again; the path bits do not gate forwarding
+// (kernel hsr_set_path_id semantics — the path identifies the lane, and
+// every node forwards to the other ring port).
 func TestHSRPathTransition(t *testing.T) {
 	n, _, ringB, inter := hsrNode("hsr-san")
 	n.dupTable.Cleanup()
@@ -59,12 +62,14 @@ func TestHSRPathTransition(t *testing.T) {
 	if len(ringB.frames) != 0 {
 		t.Errorf("duplicate frame forwarded again (%d frames)", len(ringB.frames))
 	}
-	// path-1 frame must not be re-forwarded.
+	// A path-1 frame with the same (src, seq) is also a duplicate (the
+	// ring copy from the other direction) and must be dropped — path
+	// bits do not gate forwarding, duplicate detection does.
 	hsr1, _ := engine.RewriteHSRPath(hsr, 1)
 	ringB.drain()
 	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: hsr1, frameSz: len(hsr1)})
 	if len(ringB.frames) != 0 {
-		t.Errorf("path-1 frame forwarded (%d frames)", len(ringB.frames))
+		t.Errorf("duplicate path-1 frame forwarded (%d frames)", len(ringB.frames))
 	}
 	_ = inter
 }
@@ -280,24 +285,31 @@ func TestHSRHSRRingToInterlink(t *testing.T) {
 
 	n.handleIncomingHSRFrame(frameEvent{iface: "ring1_a", frame: frame, frameSz: len(frame)})
 
+	// Forwarded ring copy carries the egress-lane path (B = lane 1) and
+	// the same seq; the interlink copy is forwarded unchanged (the peer
+	// QuadBox injects it fresh).
 	if len(ringB.frames) != 1 {
 		t.Fatalf("expected 1 forward to ring B, got %d", len(ringB.frames))
+	}
+	path, seq, _, _, err := engine.DecodeHSR(ringB.frames[0])
+	if err != nil {
+		t.Fatalf("ringB decode: %v", err)
+	}
+	if path != 1 {
+		t.Errorf("ringB path = %d, want 1 (egress lane B)", path)
+	}
+	if seq != 7 {
+		t.Errorf("ringB seq = %d, want 7", seq)
 	}
 	if len(inter.frames) != 1 {
 		t.Fatalf("expected 1 forward to interlink, got %d", len(inter.frames))
 	}
-	// Both forwarded copies must carry path 1 and the same seq.
-	for name, f := range map[string][]byte{"ringB": ringB.frames[0], "inter": inter.frames[0]} {
-		path, seq, _, _, err := engine.DecodeHSR(f)
-		if err != nil {
-			t.Fatalf("%s decode: %v", name, err)
-		}
-		if path != 1 {
-			t.Errorf("%s path = %d, want 1", name, path)
-		}
-		if seq != 7 {
-			t.Errorf("%s seq = %d, want 7", name, seq)
-		}
+	_, iseq, _, _, err := engine.DecodeHSR(inter.frames[0])
+	if err != nil {
+		t.Fatalf("inter decode: %v", err)
+	}
+	if iseq != 7 {
+		t.Errorf("inter seq = %d, want 7 (preserved across rings)", iseq)
 	}
 }
 
@@ -426,5 +438,98 @@ func TestHSRSanInjectLapReturnDedup(t *testing.T) {
 	// And it must not be forwarded to the other ring port either (path 1).
 	if len(ringB.frames) != 0 {
 		t.Errorf("lap-return forwarded around the ring (%d frames)", len(ringB.frames))
+	}
+}
+
+// TestHSRMultiHopForward: in a ring of 4+ nodes a frame must survive
+// multiple hops; a path-1 frame arriving at an intermediate node is
+// forwarded onward to the other ring port (the path bits identify the
+// egress lane, they do not stop forwarding). This is the regression test
+// for the 4-node ring failure (vpc1-vpc2 ping lost when a link broke).
+func TestHSRMultiHopForward(t *testing.T) {
+	n, _, ringB, _ := hsrNode("hsr-san")
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x80}
+	frame := hsrFrame(src, 1, 5) // arrives with path 1 (already one hop)
+
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+
+	// Must be forwarded to ring B (path bits do not gate forwarding).
+	if len(ringB.frames) != 1 {
+		t.Fatalf("path-1 frame not forwarded onward (%d frames) — multi-hop ring broken", len(ringB.frames))
+	}
+	// The forwarded copy's lane bit reflects the egress port (B = 1).
+	path, seq, _, _, err := engine.DecodeHSR(ringB.frames[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if seq != 5 {
+		t.Errorf("seq = %d, want 5 (preserved end-to-end)", seq)
+	}
+	if path&1 != 1 {
+		t.Errorf("forwarded lane bit = %d, want 1 (egress B)", path&1)
+	}
+
+	// A true duplicate (same src, seq) is still dropped.
+	ringB.drain()
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+	if len(ringB.frames) != 0 {
+		t.Errorf("duplicate forwarded (%d frames)", len(ringB.frames))
+	}
+}
+
+// TestHSRPathLanePreservesNetID: forwarding must only rewrite the lane
+// bit, leaving coupling NetId bits intact (HSR-PRP PathId semantics).
+func TestHSRPathLanePreservesNetID(t *testing.T) {
+	n, _, ringB, _ := hsrNode("hsr-san")
+	n.dupTable.Cleanup()
+
+	// PathId (NetId=2, LanId=1) = 0b0101 = 5.
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x81}
+	frame := hsrFrame(src, 5, 6)
+
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+	if len(ringB.frames) != 1 {
+		t.Fatalf("expected forward, got %d", len(ringB.frames))
+	}
+	path, _, _, _, err := engine.DecodeHSR(ringB.frames[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Forwarded to lane B: lane bit becomes 1, NetId bits (2) preserved.
+	if path != 5 {
+		t.Errorf("path after forward = %d, want 5 (NetId 2, lane B)", path)
+	}
+}
+
+// TestHSRPRPSeqPreservedOnInject: in hsr-prp coupling, a frame arriving
+// from the PRP LAN (RCT-tagged) must be injected onto the ring with the
+// SAME sequence number as the RCT, so both coupling RedBoxes emit
+// identical (src, seq) and the ring deduplicates them (exactly-once).
+func TestHSRPRPSeqPreservedOnInject(t *testing.T) {
+	n, ringA, ringB, _ := hsrNode("hsr-prp")
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x90}
+	frame := ethFrame(src, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	frame[12] = 0x08
+	frame[13] = 0x00
+	// RCT with seq 123 on LAN A.
+	rct := engine.EncodeRCT(frame, 123, 0)
+
+	n.handleHSRInterlinkFrame(frameEvent{iface: "interlink", frame: rct, frameSz: len(rct)})
+
+	if len(ringA.frames) != 1 || len(ringB.frames) != 1 {
+		t.Fatalf("expected 1 frame per ring port, got A=%d B=%d", len(ringA.frames), len(ringB.frames))
+	}
+	for name, f := range map[string][]byte{"A": ringA.frames[0], "B": ringB.frames[0]} {
+		_, seq, _, _, err := engine.DecodeHSR(f)
+		if err != nil {
+			t.Fatalf("%s decode: %v", name, err)
+		}
+		if seq != 123 {
+			t.Errorf("%s HSR seq = %d, want 123 (RCT seq preserved end-to-end)", name, seq)
+		}
 	}
 }

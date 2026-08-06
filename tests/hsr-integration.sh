@@ -40,14 +40,14 @@ cd "$SCRIPT_DIR/topologies/hsr-ring"
 echo "==> starting HSR ring topology"
 docker compose up --pull never -d
 
-for rb in redbox-a redbox-b redbox-c; do
+for rb in redbox-a redbox-b redbox-c redbox-d; do
     for i in $(seq 1 30); do
         docker compose exec -T "$rb" pgrep prpd >/dev/null 2>&1 && break
         [ "$i" = 30 ] && { echo "FAIL: prpd not running in $rb"; exit 1; }
         sleep 1
     done
 done
-echo "==> prpd running in all 3 HSR RedBoxes"
+echo "==> prpd running in all 4 HSR RedBoxes"
 
 echo "==> test A1: SAN ping across the HSR ring"
 if ! docker compose exec -T san-1 sh -c 'ping -c 5 -W 2 10.0.0.12' | grep -q "0% packet loss"; then
@@ -56,18 +56,27 @@ if ! docker compose exec -T san-1 sh -c 'ping -c 5 -W 2 10.0.0.12' | grep -q "0%
 fi
 echo "PASS: HSR ring baseline ping"
 
-echo "==> test A2: ring-break failover (disconnect one ring link)"
-RB_A="$(docker compose ps -q redbox-a)"
-docker network disconnect ring31 "$RB_A" 2>/dev/null || true
-sleep 2
-if ! docker compose exec -T san-1 sh -c 'ping -c 5 -W 2 10.0.0.12' | grep -q "0% packet loss"; then
-    echo "FAIL: HSR ping failed after ring link disconnect"
+echo "==> test A1b: SAN ping around the whole 4-node ring"
+if ! docker compose exec -T san-1 sh -c 'ping -c 5 -W 2 10.0.0.14' | grep -q "0% packet loss"; then
+    echo "FAIL: 4-node ring ping san-1 -> san-4 failed"
     exit 1
 fi
-echo "PASS: HSR ring-break failover"
+echo "PASS: 4-node ring ping san-1 -> san-4"
 
-# Reconnect the ring link for the remaining ring tests.
-docker network connect ring31 "$RB_A" 2>/dev/null || true
+echo "==> test A2: ring-break failover (break prp1-prp2 link)"
+docker compose exec -T redbox-a sh -c 'ip link set eth1 down' >/dev/null 2>&1 || true
+sleep 2
+# san-1 (prp1) and san-2 (prp2) are the nodes on either side of the
+# broken link; they must still reach each other via the 2-hop path
+# (prp1 -> prp4 -> prp3 -> prp2).
+if ! docker compose exec -T san-1 sh -c 'ping -c 5 -W 2 10.0.0.12' | grep -q "0% packet loss"; then
+    echo "FAIL: HSR ping failed after prp1-prp2 link break"
+    exit 1
+fi
+echo "PASS: HSR ring-break failover (2-hop path)"
+
+# Restore the link for the remaining ring tests.
+docker compose exec -T redbox-a sh -c 'ip link set eth1 up' >/dev/null 2>&1 || true
 sleep 3
 
 # --- Test A3: GOOSE with retransmit bursts across the ring, exactly-once ---

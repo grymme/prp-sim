@@ -132,40 +132,38 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 	}
 	n.dupTable.InsertWithExpiry(srcMAC, seq, 0, n.entryForgetMs())
 
-	// Forward around the ring: path 0 frames continue (with path set to
-	// 1); path 1 frames have already travelled one direction and are not
-	// forwarded again.
-	if path == 0 {
-		fwd, err := engine.RewriteHSRPath(event.frame, 1)
-		if err == nil {
-			port := n.LanB
-			if other == "lan_a" {
-				port = n.LanA
-			}
-			if _, err := port.Write(fwd); err != nil {
-				n.tracef("HSR forward to %s failed: %v", other, err)
-			} else {
-				n.countFrame(other, "out")
-				n.tracef("HSR frame from %s (seq %d) forwarded to %s (path 1)", event.iface, seq, other)
-			}
+	// Forward around the ring: every received ring frame is forwarded to
+	// the other ring port (mirrors the kernel hsr_forward_skb, which
+	// forwards to all other ports; loop protection comes from the node
+	// table + originator discard, not from the path bits). The path
+	// field identifies the egress lane: 0 when egressing on LAN A, 1 on
+	// LAN B (kernel hsr_set_path_id). For HSR-PRP coupling the frame
+	// may already carry a coupling PathId in the top bits; only the
+	// lane bit is set on forward (PathId bits are preserved).
+	fwd, err := engine.RewriteHSRPathLane(event.frame, other == "lan_a")
+	if err == nil {
+		port := n.LanB
+		if other == "lan_a" {
+			port = n.LanA
 		}
-	} else {
-		n.tracef("HSR frame on %s has path %d — not forwarded", event.iface, path)
+		if _, err := port.Write(fwd); err != nil {
+			n.tracef("HSR forward to %s failed: %v", other, err)
+		} else {
+			n.countFrame(other, "out")
+			n.tracef("HSR frame from %s (seq %d) forwarded to %s (lane %d)", event.iface, seq, other, map[bool]int{true: 0, false: 1}[other == "lan_a"])
+		}
 	}
 
 	// hsr-hsr (QuadBox): also forward the frame onto the interlink so
 	// it reaches the other HSR ring. The interlink carries HSR-tagged
-	// traffic (path set to 1 like any other egress); the peer QuadBox
-	// injects it into its own ring as a fresh path-0 frame.
+	// traffic; the peer QuadBox injects it into its own ring as a fresh
+	// traversal.
 	if n.IsHSRHSR() && n.Interlink != nil {
-		fwd, err := engine.RewriteHSRPath(event.frame, 1)
-		if err == nil {
-			if _, err := n.Interlink.Write(fwd); err != nil {
-				n.tracef("HSR forward to interlink failed: %v", err)
-			} else {
-				n.countFrame("interlink", "out")
-				n.tracef("HSR frame from %s (seq %d) forwarded to interlink (ring 2)", event.iface, seq)
-			}
+		if _, err := n.Interlink.Write(event.frame); err != nil {
+			n.tracef("HSR forward to interlink failed: %v", err)
+		} else {
+			n.countFrame("interlink", "out")
+			n.tracef("HSR frame from %s (seq %d) forwarded to interlink (ring 2)", event.iface, seq)
 		}
 	}
 
@@ -287,12 +285,30 @@ func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 		path = (n.NetID() << 1) | n.LanID()
 	}
 
-	// Allocate ONE sequence number and register it in the duplicate
-	// table before sending. The kernel does this (hsr_register_frame_out)
-	// so the originator recognises its own injected frames when they
-	// return after a full lap and discards them instead of delivering
-	// them to the SAN a second time.
-	seq := n.seqMgr.Next(srcMAC)
+	// Sequence number: for hsr-prp coupling the frame arrives from the
+	// PRP LAN as an RCT-tagged frame whose sequence number must be
+	// PRESERVED as the HSR tag's sequence number. The two coupling
+	// RedBoxes (LAN A and LAN B) inject the same (src MAC, seq), so the
+	// ring's duplicate detection discards the second copy — exactly-once
+	// across the coupling. For hsr-san the SAN frame has no seq, so one
+	// is allocated per source MAC.
+	var seq uint16
+	if n.IsHSRPRPCoupling() {
+		_, rctSeq, _, err := engine.DecodeRCT(event.frame)
+		if err != nil {
+			n.tracef("coupling: no RCT on interlink frame: %v", err)
+			n.noteDrop("malformed")
+			return
+		}
+		seq = uint16(rctSeq)
+	} else {
+		seq = n.seqMgr.Next(srcMAC)
+	}
+
+	// Register the injected frame in the duplicate table before sending
+	// (kernel hsr_register_frame_out) so the originator recognises its
+	// own injected frames when they return after a full lap and discards
+	// them instead of delivering them to the SAN a second time.
 	n.dupTable.InsertWithExpiry(srcMAC, int(seq), 0, n.entryForgetMs())
 
 	// Preserve the VLAN tag if present; the HSR tag goes after it. The
