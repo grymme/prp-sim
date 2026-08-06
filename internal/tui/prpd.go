@@ -81,7 +81,7 @@ func StartPrpd(out io.Writer) *prpdTUI {
 // Draw renders the full frame (header, stats, settings, debug log).
 func (t *prpdTUI) Draw(st PrpdStats, set PrpdSettings, logs []string) {
 	var b strings.Builder
-	b.WriteString("\x1b[H")
+	b.WriteString("\x1b[2J\x1b[H") // clear screen + home (short frames must not leave stale lines)
 	line := func(s string) { b.WriteString(s); b.WriteString("\r\n") }
 	bar := func() { line("------------------------------------------------------------------------") }
 
@@ -117,7 +117,9 @@ func (t *prpdTUI) Draw(st PrpdStats, set PrpdSettings, logs []string) {
 	for _, l := range logs {
 		line("    " + truncate(l, 72))
 	}
-	line("\x1b[K") // clear remainder of last line
+	// Clear anything below the last drawn line (frames shrink when the
+	// log list does), so stale text from the previous frame never shows.
+	b.WriteString("\x1b[0J\r\n")
 
 	b.WriteString("\x1b[?25h")
 	t.out.Write([]byte(b.String()))

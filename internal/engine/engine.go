@@ -103,7 +103,9 @@ func IsMulticastMAC(frame []byte) bool {
 // EncodeRCT pads the frame to the minimum Ethernet size, appends the 6-byte
 // PRP RCT trailer and returns the result. seq must be the sequence number
 // assigned to this frame (the same for both LAN copies); lanID must be 0
-// (LAN A) or 1 (LAN B).
+// (LAN A) or 1 (LAN B). The 4-bit lan_id field on the wire uses the PRP
+// wire values 0xA (LAN A) / 0xB (LAN B), as the kernel and Wireshark
+// expect (kernel PRP_LAN_ID = 0x5; LAN A = 0x1010, LAN B = 0x1011).
 func EncodeRCT(frame []byte, seq uint16, lanID int) []byte {
 	vlan := IsVLANFrame(frame)
 	minSize := ethMinLen
@@ -126,7 +128,8 @@ func EncodeRCT(frame []byte, seq uint16, lanID int) []byte {
 
 	rct := make([]byte, RCTLen)
 	binary.BigEndian.PutUint16(rct[0:2], seq)
-	packed := (uint16(lanID&0x0F) << 12) | (uint16(lsdu) & 0x0FFF)
+	wireLanID := uint16(lanID&0x0F) | 0xA // 0 -> 0xA (LAN A), 1 -> 0xB (LAN B)
+	packed := (wireLanID << 12) | (uint16(lsdu) & 0x0FFF)
 	binary.BigEndian.PutUint16(rct[2:4], packed)
 	binary.BigEndian.PutUint16(rct[4:6], PRPSuffix)
 
@@ -134,9 +137,11 @@ func EncodeRCT(frame []byte, seq uint16, lanID int) []byte {
 }
 
 // DecodeRCT validates the RCT trailer of a received frame and returns the
-// LAN ID, the sequence number and the original frame without the trailer.
-// The frame must end with the 0x88FB suffix and the stored LSDU size must
-// match the actual frame length, as required by the kernel.
+// LAN ID (0 for LAN A, 1 for LAN B), the sequence number and the original
+// frame without the trailer. The frame must end with the 0x88FB suffix and
+// the stored LSDU size must match the actual frame length, as required by
+// the kernel. The wire lan_id values 0xA/0xB (and the legacy 0/1) are
+// normalised to 0/1.
 func DecodeRCT(frame []byte) (lanID, seq int, payload []byte, err error) {
 	if len(frame) < 14+RCTLen {
 		return 0, 0, nil, fmt.Errorf("frame too short for RCT: %d bytes", len(frame))
@@ -150,7 +155,8 @@ func DecodeRCT(frame []byte) (lanID, seq int, payload []byte, err error) {
 
 	seq = int(binary.BigEndian.Uint16(frame[off : off+2]))
 	packed := binary.BigEndian.Uint16(frame[off+2 : off+4])
-	lanID = int((packed >> 12) & 0x0F)
+	wireLanID := int((packed >> 12) & 0x0F)
+	lanID = wireLanID & 0x01 // 0xA/0xB (and 0/1) -> 0/1
 	storedLSDU := int(packed & 0x0FFF)
 
 	// LSDU size must match: total length minus Ethernet header (and VLAN

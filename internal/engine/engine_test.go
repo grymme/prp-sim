@@ -22,7 +22,8 @@ func TestEncodeDecodeRCT(t *testing.T) {
 	}
 
 	// Golden check of the trailer bytes (LSDU = 60+6-14 = 52 = 0x034).
-	wantTail := []byte{0x00, 0x07, 0x00, 0x34, 0x88, 0xfb}
+	// lan_id on the wire is 0xA for LAN A (kernel PRP_LAN_ID semantics).
+	wantTail := []byte{0x00, 0x07, 0xa0, 0x34, 0x88, 0xfb}
 	if got := encoded[len(encoded)-RCTLen:]; !bytes.Equal(got, wantTail) {
 		t.Fatalf("trailer = % x, want % x", got, wantTail)
 	}
@@ -161,5 +162,29 @@ func TestIsPRPFrame(t *testing.T) {
 	binary.BigEndian.PutUint16(rand[58:60], 0x1234)
 	if IsPRPFrame(rand) {
 		t.Error("frame without PRP suffix should not be detected as PRP")
+	}
+}
+
+// TestEncodeDecodeRCTWireLanID: the RCT wire lan_id must be 0xA (LAN A) /
+// 0xB (LAN B) per the kernel (PRP_LAN_ID) and Wireshark; DecodeRCT
+// normalises back to 0/1.
+func TestEncodeDecodeRCTWireLanID(t *testing.T) {
+	orig := make([]byte, 60)
+	orig[12] = 0x08
+	orig[13] = 0x00
+
+	for lan, wantNibble := range map[int]byte{0: 0xA, 1: 0xB} {
+		encoded := EncodeRCT(orig, 1, lan)
+		gotNibble := encoded[len(encoded)-4] >> 4
+		if gotNibble != wantNibble {
+			t.Errorf("lan %d: wire lan_id = 0x%X, want 0x%X", lan, gotNibble, wantNibble)
+		}
+		lanID, _, _, err := DecodeRCT(encoded)
+		if err != nil {
+			t.Fatalf("lan %d decode: %v", lan, err)
+		}
+		if lanID != lan {
+			t.Errorf("lan %d: decoded back to %d", lan, lanID)
+		}
 	}
 }

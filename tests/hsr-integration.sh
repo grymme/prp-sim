@@ -263,9 +263,11 @@ docker run --rm --privileged \
     --count 200 --rate 30 \
     >/dev/null 2>&1 &
 sleep 4
-# Break the ring link between the two coupling RedBoxes (ringab).
+# Break the ring link between the two coupling RedBoxes (ringab) by
+# taking the ring port down at L2 (no interface renumbering; a docker
+# network disconnect would re-map ethN and race later tests).
 RPA="$(docker compose ps -q hsr-prp-a)"
-docker network disconnect hsr-prp-coupling_ringab "$RPA" 2>/dev/null || true
+docker compose exec -T hsr-prp-a sh -c 'ip link set eth0 down' >/dev/null 2>&1 || true
 wait || true
 docker wait tg-recv-b4 >/dev/null 2>&1 || true
 TG4=$(docker logs tg-recv-b4 2>&1)
@@ -283,8 +285,8 @@ if [ -z "$U4" ] || [ "$U4" -lt 170 ]; then
 fi
 echo "PASS: coupling GOOSE during ring break (unique=$U4, dupes=$D4)"
 
-# Reconnect the ring link.
-docker network connect hsr-prp-coupling_ringab "$RPA" 2>/dev/null || true
+# Restore the ring link.
+docker compose exec -T hsr-prp-a sh -c 'ip link set eth0 up' >/dev/null 2>&1 || true
 sleep 3
 
 # --- Test B5: coupling GOOSE during PRP LAN A failure ---
@@ -300,10 +302,10 @@ docker run --rm --privileged \
     --count 200 --rate 30 \
     >/dev/null 2>&1 &
 sleep 4
-# Kill the coupling RedBox on LAN A; frames must still arrive exactly-once
-# via the LAN B coupling RedBox.
+# Take the LAN A link down on the coupling RedBox; frames must still
+# arrive exactly-once via the LAN B coupling RedBox.
 RPA2="$(docker compose ps -q hsr-prp-a)"
-docker network disconnect hsr-prp-coupling_lan-a "$RPA2" 2>/dev/null || true
+docker compose exec -T hsr-prp-a sh -c 'ip link set eth2 down' >/dev/null 2>&1 || true
 wait || true
 docker wait tg-recv-b5 >/dev/null 2>&1 || true
 TG5=$(docker logs tg-recv-b5 2>&1)
@@ -321,8 +323,8 @@ if [ -z "$U5b" ] || [ "$U5b" -lt 170 ]; then
 fi
 echo "PASS: coupling GOOSE with LAN A down (unique=$U5b, dupes=$D5b)"
 
-# Reconnect LAN A.
-docker network connect hsr-prp-coupling_lan-a "$RPA2" 2>/dev/null || true
+# Restore LAN A.
+docker compose exec -T hsr-prp-a sh -c 'ip link set eth2 up' >/dev/null 2>&1 || true
 sleep 3
 
 # --- Test B6: coupling RedBox restart mid-traffic ---
@@ -419,7 +421,7 @@ docker run --rm --privileged \
 docker run --rm --privileged \
     --network hsr-prp-coupling_san-net-a \
     --entrypoint trafficgen prp-sim:test --mode send --iface eth0 --appid 0x2002 \
-    --count 60 --rate 60 \
+    --count 60 --rate 60 --src-mac 02:00:00:00:00:02 \
     >/dev/null 2>&1 || true
 docker wait tg-recv-b8a >/dev/null 2>&1 || true
 docker wait tg-recv-b8b >/dev/null 2>&1 || true

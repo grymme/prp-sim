@@ -375,3 +375,56 @@ func TestHSRHSRSupervisionBridge(t *testing.T) {
 		t.Errorf("interlink supervision not forwarded to ring (A=%d B=%d)", len(ringA.frames), len(ringB.frames))
 	}
 }
+
+// TestHSRSanInjectLapReturnDedup: a frame injected from the SAN is
+// registered in the dup table; when the same (src, seq) returns after a
+// full ring lap (path 1), it must be discarded, not delivered to the SAN
+// again (the "no duplicates on the interlink" guarantee — mirrors the
+// kernel's hsr_register_frame_out).
+func TestHSRSanInjectLapReturnDedup(t *testing.T) {
+	n, ringA, ringB, inter := hsrNode("hsr-san")
+	n.dupTable.Cleanup()
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x70}
+	frame := ethFrame(src, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	frame[12] = 0x08
+	frame[13] = 0x00
+
+	// 1. Inject from the SAN: one frame on each ring port, seq assigned.
+	n.handleHSRInterlinkFrame(frameEvent{iface: "interlink", frame: frame, frameSz: len(frame)})
+	if len(ringA.frames) != 1 || len(ringB.frames) != 1 {
+		t.Fatalf("expected 1 frame per ring port after injection, got A=%d B=%d", len(ringA.frames), len(ringB.frames))
+	}
+	// Both copies carry the same seq.
+	_, seqA, _, _, err := engine.DecodeHSR(ringA.frames[0])
+	if err != nil {
+		t.Fatalf("decode ring A: %v", err)
+	}
+	_, seqB, _, _, err := engine.DecodeHSR(ringB.frames[0])
+	if err != nil {
+		t.Fatalf("decode ring B: %v", err)
+	}
+	if seqA != seqB {
+		t.Fatalf("seq differs across ring ports: %d vs %d", seqA, seqB)
+	}
+
+	// 2. The frame completes a lap and returns on ring A with path 1.
+	lapReturn, err := engine.RewriteHSRPath(ringA.frames[0], 1)
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	inter.drain()
+	ringA.drain()
+	ringB.drain()
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: lapReturn, frameSz: len(lapReturn)})
+
+	// It must NOT be delivered to the SAN (the originator recognises its
+	// own injection as a duplicate).
+	if len(inter.frames) != 0 {
+		t.Errorf("lap-return delivered to SAN (%d frames) — duplicate ICMP on the interlink", len(inter.frames))
+	}
+	// And it must not be forwarded to the other ring port either (path 1).
+	if len(ringB.frames) != 0 {
+		t.Errorf("lap-return forwarded around the ring (%d frames)", len(ringB.frames))
+	}
+}

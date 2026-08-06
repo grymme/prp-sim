@@ -287,6 +287,14 @@ func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 		path = (n.NetID() << 1) | n.LanID()
 	}
 
+	// Allocate ONE sequence number and register it in the duplicate
+	// table before sending. The kernel does this (hsr_register_frame_out)
+	// so the originator recognises its own injected frames when they
+	// return after a full lap and discards them instead of delivering
+	// them to the SAN a second time.
+	seq := n.seqMgr.Next(srcMAC)
+	n.dupTable.InsertWithExpiry(srcMAC, int(seq), 0, n.entryForgetMs())
+
 	// Preserve the VLAN tag if present; the HSR tag goes after it. The
 	// encapsulated EtherType is the frame's own EtherType (or the inner
 	// one for VLAN-tagged frames).
@@ -297,11 +305,11 @@ func (n *Node) handleHSRInterlinkFrame(event frameEvent) {
 	if vlan {
 		// event.frame: dst(6) src(6) TPID(2) TCI(2) innerEtherType(2) ...
 		inner := event.frame[18:]
-		hsrBody := engine.EncodeHSR(inner, path, n.seqMgr.Next(srcMAC), et)
+		hsrBody := engine.EncodeHSR(inner, path, seq, et)
 		body = append(append(append(append([]byte(nil), event.frame[:12]...),
 			event.frame[12:16]...), hsrBody...), []byte{}...)
 	} else {
-		hsrBody := engine.EncodeHSR(event.frame[14:], path, n.seqMgr.Next(srcMAC), et)
+		hsrBody := engine.EncodeHSR(event.frame[14:], path, seq, et)
 		body = append(append([]byte(nil), event.frame[:12]...), hsrBody...)
 	}
 

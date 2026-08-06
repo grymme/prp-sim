@@ -97,3 +97,36 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("truncate long = %q, want abcdefg...", got)
 	}
 }
+
+// TestPrpdTUINoStaleLines: redrawing with a shorter frame (fewer log
+// lines) must clear the lines from the previous frame — otherwise stale
+// text like "STATS port A..." appears spliced into the new frame.
+func TestPrpdTUINoStaleLines(t *testing.T) {
+	var out bytes.Buffer
+	view := StartPrpd(&out)
+	st := PrpdStats{Role: "hsr-san", Name: "rb", PRPID: 1}
+	set := PrpdSettings{Interfaces: "eth0 (A), eth1 (B), eth2 (i)", TrailerEnabled: true, Supervision: "on (2s)", ForwardAll: true}
+
+	// First frame: 3 log lines.
+	view.Draw(st, set, []string{"log 1", "log 2", "log 3"})
+	first := out.String()
+
+	// Second frame: no log lines at all.
+	out.Reset()
+	view.Draw(st, set, nil)
+	second := out.String()
+
+	// The second frame must contain a clear-screen sequence and must not
+	// contain the stale "log 1" text.
+	if !strings.Contains(second, "\x1b[2J") {
+		t.Error("second frame missing clear-screen sequence")
+	}
+	if strings.Contains(second, "log 1") {
+		t.Error("stale log line leaked into second frame")
+	}
+	// The frame must end by clearing to end-of-screen.
+	if !strings.Contains(second, "\x1b[0J") {
+		t.Error("frame missing clear-to-end-of-screen")
+	}
+	_ = first
+}

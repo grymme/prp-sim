@@ -13,14 +13,18 @@ import (
 //	Dst MAC    : 01-15-4E-00-01-00 (PRP multicast)
 //	Src MAC    : node MAC
 //	EtherType  : 0x88FB
-//	path(2B)   : 0 (PRP; HSR uses path bits)
+//	path/ver(2B): path(4b)<<12 | HSR version(12b)  — version = 1 (v1)
 //	seq(2B)    : supervision sequence number
 //	TLV(2B)    : type=20 (LIFE_CHECK_DD), length=6
 //	MacAddrA(6): MAC address of the node
-//	pad to 60, then a 6-byte RCT trailer per LAN (lan_id 0 or 1).
+//	pad to 60, then a 6-byte RCT trailer per LAN (lan_id 0xA/0xB).
 //
 // The kernel identifies supervision frames by dst MAC + EtherType and
-// validates the RCT's LSDU size against HSR_V1_SUP_LSDUSIZE (52).
+// validates the RCT's LSDU size against HSR_V1_SUP_LSDUSIZE (52). The
+// low 12 bits of the first word carry the supervision version (1 for
+// HSRv1/PRPv1), which both the kernel (set_hsr_stag_HSR_ver) and the
+// Wireshark dissector (packet-hsr-prp-supervision.c: sup_version) use to
+// select the frame layout.
 
 const (
 	// SuperMulticastMAC is the PRP/HSR supervision multicast address.
@@ -51,6 +55,11 @@ type Frame struct {
 	RedBoxMAC [6]byte // set when TLVType == PRP_TLV_REDBOX_MAC
 }
 
+// SupVersion is the supervision frame version carried in the low 12 bits
+// of the first tag word (1 = HSRv1/PRPv1, matching the kernel's
+// set_hsr_stag_HSR_ver(1) and Wireshark's sup_version check).
+const SupVersion = 1
+
 // Build constructs a supervision frame for a node with the given source MAC
 // and sequence number, padded and ready for an RCT trailer to be appended.
 func Build(srcMAC []byte, seq uint16) []byte {
@@ -60,8 +69,9 @@ func Build(srcMAC []byte, seq uint16) []byte {
 	payload = append(payload, srcMAC...)                          // src
 	payload = append(payload, 0x88, 0xfb)                         // EtherType
 
-	// Supervision tag: path(2B, =0 for PRP) + seq(2B).
+	// Supervision tag: path(4b)<<12 | version(12b) + seq(2B).
 	tag := make([]byte, 4)
+	binary.BigEndian.PutUint16(tag[0:2], SupVersion)
 	binary.BigEndian.PutUint16(tag[2:4], seq)
 	payload = append(payload, tag...)
 	// TLV: LIFE_CHECK_DD, length 6.
@@ -78,11 +88,14 @@ func Build(srcMAC []byte, seq uint16) []byte {
 
 // BuildRCTed returns the supervision frame with the PRP RCT trailer for the
 // given LAN ID (0 = A, 1 = B). The LSDU size matches HSR_V1_SUP_LSDUSIZE.
+// The wire lan_id nibble uses 0xA (LAN A) / 0xB (LAN B), like data frames
+// and as the kernel/Wireshark expect.
 func BuildRCTed(srcMAC []byte, seq uint16, lanID int) []byte {
 	frame := Build(srcMAC, seq)
 	rct := make([]byte, engine.RCTLen)
 	binary.BigEndian.PutUint16(rct[0:2], seq)
-	packed := (uint16(lanID&0x0F) << 12) | supLSDUSize
+	wireLanID := uint16(lanID&0x0F) | 0xA
+	packed := (wireLanID << 12) | supLSDUSize
 	binary.BigEndian.PutUint16(rct[2:4], packed)
 	binary.BigEndian.PutUint16(rct[4:6], engine.PRPSuffix)
 	return append(frame, rct...)
@@ -123,13 +136,15 @@ func Parse(frame []byte) *Frame {
 // BuildHSR constructs an HSR ring supervision frame. The path field is
 // the 4-bit PathId (0 in pure HSR; (NetId<<1)|LanId for HSR-PRP coupling),
 // carried in the top 4 bits of the first tag word like a data frame.
+// The low 12 bits carry the supervision version (SupVersion = 1), as the
+// kernel sets via set_hsr_stag_HSR_ver and Wireshark checks.
 // The frame is NOT RCT-tagged — ring supervision is identified by the
 // 0x88FB EtherType and the HSR tag layout.
 //
 // Layout (matches the kernel hsr_sup_tag):
 //
 //	dst 01:15:4e:00:01:00, src MAC, EtherType 0x88FB
-//	path(2B: path<<12) + seq(2B)
+//	path/ver(2B: path<<12 | SupVersion) + seq(2B)
 //	TLV type (22 ANNOUNCE | 23 LIFE_CHECK) + length 6
 //	MacAddrA (6B)
 //	pad to 60
@@ -139,9 +154,9 @@ func BuildHSR(srcMAC []byte, seq uint16, path int) []byte {
 	payload = append(payload, srcMAC...)                          // src
 	payload = append(payload, 0x88, 0xfb)                         // EtherType
 
-	// path (top 4 bits) + seq.
+	// path (top 4 bits) | version (low 12 bits) + seq.
 	tag := make([]byte, 4)
-	binary.BigEndian.PutUint16(tag[0:2], uint16(path&0x0F)<<12)
+	binary.BigEndian.PutUint16(tag[0:2], uint16(path&0x0F)<<12|SupVersion)
 	binary.BigEndian.PutUint16(tag[2:4], seq)
 	payload = append(payload, tag...)
 	// TLV: LIFE_CHECK, length 6.
