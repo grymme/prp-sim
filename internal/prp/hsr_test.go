@@ -533,3 +533,94 @@ func TestHSRPRPSeqPreservedOnInject(t *testing.T) {
 		}
 	}
 }
+
+// ringMemberMAC marks a peer as a learned ring member via a ring-port
+// supervision frame (the only way ringMembers is populated).
+func ringMemberMAC(t *testing.T, n *Node, mac [6]byte) {
+	t.Helper()
+	sup := supervision.BuildHSR(mac[:], 1, 0)
+	n.handleSupervisionFrame(frameEvent{iface: "lan_a", frame: sup, frameSz: len(sup)})
+}
+
+// TestHSRRingMemberFilterSAN: unicast to a learned ring member is NOT
+// delivered to the SAN (kernel hsr_drop_frame); multicast still is.
+func TestHSRRingMemberFilterSAN(t *testing.T) {
+	n, _, _, inter := hsrNode("hsr-san")
+	n.dupTable.Cleanup()
+
+	member := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xAA}
+	ringMemberMAC(t, n, member)
+
+	// Unicast to the ring member: must stay on the ring.
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBB}
+	frame := hsrFrame(src, 0, 1)
+	// Make it unicast to `member`.
+	copy(frame[0:6], member[:])
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+	if len(inter.frames) != 0 {
+		t.Errorf("unicast to ring member delivered to SAN (%d frames)", len(inter.frames))
+	}
+
+	// Multicast to the same destination MAC range: must be delivered.
+	inter.drain()
+	src2 := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBC}
+	frame2 := hsrFrame(src2, 0, 2)
+	copy(frame2[0:6], []byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame2, frameSz: len(frame2)})
+	if len(inter.frames) != 1 {
+		t.Errorf("multicast not delivered to SAN (%d frames)", len(inter.frames))
+	}
+}
+
+// TestHSRRingMemberFilterHSRHSR: unicast to a local ring member is not
+// forwarded onto the QuadBox interlink; multicast is.
+func TestHSRRingMemberFilterHSRHSR(t *testing.T) {
+	n, _, _, inter := hsrhsrNode()
+	n.dupTable.Cleanup()
+
+	member := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xAA}
+	ringMemberMAC(t, n, member)
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBB}
+	frame := hsrFrame(src, 0, 1)
+	copy(frame[0:6], member[:])
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring1_a", frame: frame, frameSz: len(frame)})
+	if len(inter.frames) != 0 {
+		t.Errorf("unicast to ring member forwarded to interlink (%d frames)", len(inter.frames))
+	}
+
+	inter.drain()
+	frame2 := hsrFrame(src, 0, 2)
+	copy(frame2[0:6], []byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring1_a", frame: frame2, frameSz: len(frame2)})
+	if len(inter.frames) != 1 {
+		t.Errorf("multicast not forwarded to interlink (%d frames)", len(inter.frames))
+	}
+}
+
+// TestHSRRingMemberFilterPRP: unicast to a ring member is not delivered
+// onto the coupled PRP LAN; multicast is.
+func TestHSRRingMemberFilterPRP(t *testing.T) {
+	n, _, _, inter := hsrNode("hsr-prp")
+	n.Config.LanID = "A"
+	n.dupTable.Cleanup()
+
+	member := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xAA}
+	ringMemberMAC(t, n, member)
+
+	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBB}
+	frame := hsrFrame(src, 0, 1) // NetId 0 != our NetId 1 → would be delivered
+	copy(frame[0:6], member[:])
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
+	if len(inter.frames) != 0 {
+		t.Errorf("unicast to ring member delivered to PRP LAN (%d frames)", len(inter.frames))
+	}
+
+	inter.drain()
+	frame2 := hsrFrame(src, 0, 2)
+	copy(frame2[0:6], []byte{0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01})
+	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame2, frameSz: len(frame2)})
+	if len(inter.frames) != 1 {
+		t.Errorf("multicast not delivered to PRP LAN (%d frames)", len(inter.frames))
+	}
+}

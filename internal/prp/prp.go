@@ -48,6 +48,12 @@ type Node struct {
 	proxyTable        map[string]time.Time
 	proxyTableMu      sync.Mutex
 	proxyTableForget  time.Duration
+	// ringMembers tracks HSR ring nodes learned from supervision frames
+	// received on the ring ports (kernel node_db). Used to implement the
+	// kernel's filter: unicast to a local ring member is NOT forwarded
+	// onto the interlink (SAN / coupled PRP LAN / other ring).
+	ringMembers   map[string]time.Time
+	ringMembersMu sync.Mutex
 	// dropCounters counts discarded frames by reason (dup/own/path/
 	// filter/malformed) for the TUI and debugging.
 	dropCounters map[string]int
@@ -166,6 +172,7 @@ func NewNode(cfg *Config) *Node {
 		proxyTableForget:  time.Duration(proxyForgetMs) * time.Millisecond,
 		supervisionForget: time.Duration(supForgetMs) * time.Millisecond,
 		supervisionSeqs:   make(map[string]uint16),
+		ringMembers:       make(map[string]time.Time),
 		now:               time.Now,
 	}
 }
@@ -328,6 +335,15 @@ func (n *Node) cleanupSupervisionSeen() {
 			delete(n.supervisionSeen, mac)
 		}
 	}
+	// Prune ring members with the same forget time (kernel
+	// HSR_NODE_FORGET_TIME).
+	n.ringMembersMu.Lock()
+	for mac, last := range n.ringMembers {
+		if last.Before(cutoff) {
+			delete(n.ringMembers, mac)
+		}
+	}
+	n.ringMembersMu.Unlock()
 }
 
 // readLoop reads frames from a raw socket interface.
@@ -707,6 +723,19 @@ func (n *Node) handleSupervisionFrame(event frameEvent) {
 		n.supervisionSeen = make(map[string]time.Time)
 	}
 	n.supervisionSeen[sup.SrcMAC] = n.nowf()
+
+	// On HSR nodes, supervision received on a RING PORT identifies a
+	// ring member (kernel node_db). Only ring-port supervision counts:
+	// hsr-hsr interlink supervision comes from the other ring and must
+	// not mark that node as a member of THIS ring.
+	if n.IsHSRNode() && (event.iface == "lan_a" || event.iface == "lan_b") {
+		n.ringMembersMu.Lock()
+		if n.ringMembers == nil {
+			n.ringMembers = make(map[string]time.Time)
+		}
+		n.ringMembers[sup.SrcMAC] = n.nowf()
+		n.ringMembersMu.Unlock()
+	}
 
 	// A regression of the supervision sequence number (16-bit, wrap-aware)
 	// means the peer restarted: its counters were reset, so the duplicate-

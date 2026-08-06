@@ -155,11 +155,14 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 	}
 
 	// hsr-hsr (QuadBox): also forward the frame onto the interlink so
-	// it reaches the other HSR ring. The interlink carries HSR-tagged
-	// traffic; the peer QuadBox injects it into its own ring as a fresh
-	// traversal.
+	// it reaches the other HSR ring — unless it is unicast addressed to
+	// a local ring member (kernel hsr_drop_frame: DA in node_db is not
+	// forwarded to the interlink).
 	if n.IsHSRHSR() && n.Interlink != nil {
-		if _, err := n.Interlink.Write(event.frame); err != nil {
+		if n.unicastToRingMember(event.frame[:6]) {
+			n.tracef("HSR unicast to ring member not forwarded to interlink")
+			n.noteDrop("filter")
+		} else if _, err := n.Interlink.Write(event.frame); err != nil {
 			n.tracef("HSR forward to interlink failed: %v", err)
 		} else {
 			n.countFrame("interlink", "out")
@@ -177,6 +180,14 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 			if err != nil {
 				n.tracef("HSR strip for coupling failed: %v", err)
 				n.noteDrop("malformed")
+				return
+			}
+			// Kernel filter (hsr_drop_frame): unicast addressed to a
+			// local ring member is not delivered to the interlink
+			// (the coupled PRP LAN).
+			if n.unicastToRingMember(original[:6]) {
+				n.tracef("HSR unicast to ring member not delivered to PRP LAN")
+				n.noteDrop("filter")
 				return
 			}
 			n.couplingToPRP(original, seq)
@@ -200,7 +211,14 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 		return
 	}
 
-	// hsr-san: strip the tag and deliver the original frame to the SAN.
+	// hsr-san: strip the tag and deliver the original frame to the SAN,
+	// subject to the kernel filter (unicast to a ring member stays on the
+	// ring) and then the configured SAN forwarding policy.
+	if n.unicastToRingMember(event.frame[:6]) {
+		n.tracef("HSR unicast to ring member not delivered to SAN")
+		n.noteDrop("filter")
+		return
+	}
 	if !n.shouldForwardToInterlink(payload) {
 		n.tracef("HSR frame from %s not forwarded to SAN (filtered)", srcMAC)
 		n.noteDrop("filter")
@@ -365,4 +383,18 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// unicastToRingMember reports whether dst is a unicast MAC address of a
+// local ring member (kernel hsr_drop_frame: "Do not forward to port C
+// (Interlink) frames from nodes A and B if DA is in NodeTable").
+func (n *Node) unicastToRingMember(dst []byte) bool {
+	if len(dst) != 6 || dst[0]&0x01 == 1 {
+		return false // multicast/broadcast always floods
+	}
+	mac := engine.GetDstMAC(dst)
+	n.ringMembersMu.Lock()
+	defer n.ringMembersMu.Unlock()
+	_, ok := n.ringMembers[mac]
+	return ok
 }
