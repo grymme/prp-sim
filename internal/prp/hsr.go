@@ -184,14 +184,10 @@ func (n *Node) handleIncomingHSRFrame(event frameEvent) {
 				n.noteDrop("malformed")
 				return
 			}
-			// Kernel filter (hsr_drop_frame): unicast addressed to a
-			// local ring member is not delivered to the interlink
-			// (the coupled PRP LAN).
-			if n.unicastToRingMember(original[:6]) {
-				n.tracef("HSR unicast to ring member not delivered to PRP LAN")
-				n.noteDrop("filter")
-				return
-			}
+			// In HSR-PRP coupling the interlink is a PRP LAN (different
+			// redundancy domain), NOT a SAN or another ring. The
+			// hsr_drop_frame filter (unicast to ring member) does NOT
+			// apply here — only the PathId reinjection check below.
 			n.couplingToPRP(original, seq)
 			return
 		}

@@ -598,9 +598,11 @@ func TestHSRRingMemberFilterHSRHSR(t *testing.T) {
 	}
 }
 
-// TestHSRRingMemberFilterPRP: unicast to a ring member is not delivered
-// onto the coupled PRP LAN; multicast is.
-func TestHSRRingMemberFilterPRP(t *testing.T) {
+// TestHSRPRPCouplingDeliversUnicast: in hsr-prp mode the interlink is a
+// coupled PRP LAN (a different redundancy domain), so the hsr_drop_frame
+// ring-member filter does NOT apply — unicast AND multicast are delivered
+// onto the PRP LAN. Only the PathId reinjection check filters.
+func TestHSRPRPCouplingDeliversUnicast(t *testing.T) {
 	n, _, _, inter := hsrNode("hsr-prp")
 	n.Config.LanID = "A"
 	n.dupTable.Cleanup()
@@ -609,11 +611,11 @@ func TestHSRRingMemberFilterPRP(t *testing.T) {
 	ringMemberMAC(t, n, member)
 
 	src := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0xBB}
-	frame := hsrFrame(src, 0, 1) // NetId 0 != our NetId 1 → would be delivered
+	frame := hsrFrame(src, 0, 1) // NetId 0 != our NetId 1 → delivered
 	copy(frame[0:6], member[:])
 	n.handleIncomingHSRFrame(frameEvent{iface: "ring_a", frame: frame, frameSz: len(frame)})
-	if len(inter.frames) != 0 {
-		t.Errorf("unicast to ring member delivered to PRP LAN (%d frames)", len(inter.frames))
+	if len(inter.frames) != 1 {
+		t.Errorf("unicast to ring member not delivered to PRP LAN (%d frames)", len(inter.frames))
 	}
 
 	inter.drain()
